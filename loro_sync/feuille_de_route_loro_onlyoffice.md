@@ -189,79 +189,58 @@ const sections = doc.getList("sections");
 ### Objectif
 Brancher le pont Loro sur le pipeline de mutations de sdkjs. C'est **la phase la plus complexe**.
 
-### 3.1 Hook des frappes texte (4 jours)
+### 3.1 L'Approche Industrielle : Le Registre Plat (Flat Node Registry) (3 jours)
+
+Au lieu de modéliser manuellement un arbre DOM complexe, nous créons un miroir générique du DOM d'ONLYOFFICE basé sur les identifiants uniques (`InternalId`) :
 
 ```typescript
-// Pseudo-code du monkey-patching de CParagraph
-const originalAddText = CParagraph.prototype.Internal_Content_Add;
+// Structure cible du Registre Plat
+const doc = new LoroDoc();
+const nodes = doc.getMap("nodes"); // Le registre universel
 
-CParagraph.prototype.Internal_Content_Add = function(pos, item) {
-  // 1. Exécution normale dans sdkjs
-  const result = originalAddText.call(this, pos, item);
-
-  // 2. Si c'est une mutation LOCALE (pas un replay distant)
-  if (!this._isRemoteApply) {
-    const paraIndex = this.getDocumentIndex(); // Index du paragraphe dans le body
-    const textOffset = this.getTextOffsetAt(pos);
-    loroAdapter.insertText(paraIndex, textOffset, item.getText());
-  }
-
-  return result;
-};
+// Création générique d'un nœud (applicable à Word, Excel, PowerPoint)
+const paraNode = new LoroMap();
+paraNode.set("type", "Paragraph");
+paraNode.setContainer("props", new LoroMap()); // Pour stocker Bold, Margins, etc.
+paraNode.setContainer("children", new LoroList()); // Pour stocker les InternalId des enfants
+nodes.setContainer("para_123", paraNode);
 ```
 
-**Sous-tâches** :
-- Mapper les offsets internes sdkjs (position dans le tableau de `CRun`) vers les offsets UTF-8 de `LoroText`
-- Gérer le split/merge automatique des `CRun` (quand sdkjs découpe un run, Loro ne doit recevoir qu'une seule opération logique)
-- Gérer les caractères spéciaux (sauts de ligne `\n`, sauts de page, tabulations)
+### 3.2 Interception du moteur OT (arrayChanges) (4 jours)
 
-### 3.2 Hook du formatage (3 jours)
+Plutôt que d'intercepter individuellement `SetBold()`, `AddText()`, etc., nous allons écouter le flux de sortie du moteur OT interne d'ONLYOFFICE (`arrayChanges`).
 
-| Opération sdkjs | Traduction Loro |
+| Avantage | Détail |
 |---|---|
-| `run.SetBold(true)` sur caractères 5-12 | `loroText.mark({ start: 5, end: 12 }, "bold", true)` |
-| `run.SetFontSize(14)` | `loroText.mark(range, "fontSize", 14)` |
-| `paragraph.SetAlignment("center")` | `loroMap.set("alignment", "center")` |
+| **Atomicité garantie** | L'OT natif calcule déjà le delta exact (ex: *seule la bordure a changé*). |
+| **Future-proof** | Si ONLYOFFICE ajoute une nouvelle propriété visuelle, le pont la synchronisera automatiquement sans modification du code. |
+| **Performance** | Pas besoin d'algorithme de "Diff" coûteux en RAM côté Loro. |
 
-**Difficulté** : sdkjs exprime le formatage via des `CRun` découpés (chaque changement de style = nouveau CRun). Loro exprime le formatage via des **marks sur des intervalles**. Il faut reconstruire l'intervalle à partir des frontières des CRun.
+### 3.3 Le pont "Passe-Plat" (ArrayChangesMapper) (4 jours)
 
-### 3.3 Hook des structures (4 jours)
-
-| Structure | Complexité | Approche |
-|---|---|---|
-| Ajout/suppression de paragraphes | Moyenne | `body.insert(index, newParaMap)` / `body.delete(index, 1)` |
-| Tableaux (ajout lignes/colonnes) | **Élevée** | `LoroList` imbriquées avec `LoroMap` par cellule |
-| Fusion/division de cellules | **Très élevée** | Mise à jour de `colspan`/`rowspan` dans les `LoroMap` + redistribution du contenu |
-| Images et formes ancrées | Moyenne | `LoroMap` avec position, dimensions, type d'habillage |
-| Undo/Redo | Élevée | Intercepter `CHistory` pour appeler `loroDoc.commit()` à chaque transaction, et utiliser le Time Travel de Loro pour l'undo |
+Il s'agit de construire la classe de traduction bidirectionnelle :
+1. **Aller (Local → Réseau)** : Intercepter le tableau `arrayChanges` généré par `sdkjs`, lire l'ID de l'objet affecté, et reporter la clé/valeur bêtement dans le `LoroMap` correspondant. Loro génère le delta binaire.
+2. **Retour (Réseau → Local)** : Quand le Loro distant notifie une mise à jour (`subscribe()`), le Mapper reconstruit un faux objet `arrayChanges` et l'injecte dans le moteur de rendu d'ONLYOFFICE.
 
 > [!WARNING]
-> **Pour le MVP** : se concentrer sur le texte, le formatage inline, les styles de paragraphe et les tableaux simples. Les formes vectorielles DrawingML et les images ancrées flottantes peuvent être différées à la v2.
+> **Le défi majeur** : Isoler complètement la logique de traduction des "Magic Codes" de l'OT d'ONLYOFFICE (ex: `Type: 14`) dans ce fichier de Mapping unique, pour protéger le projet des changements d'API futurs.
 
-### 3.4 Application des deltas distants (inclus dans chaque sous-phase)
+### 3.4 Sécurisation : Le Mutation Guard (inclus)
 
 ```typescript
-// Écoute des modifications distantes de Loro
+// Le verrou anti-écho (pour éviter les boucles infinies de deltas)
+let isApplyingRemoteUpdate = false;
+
 loroDoc.subscribe((event) => {
   if (event.by === "import") {
-    // Flag anti-écho : empêche sdkjs de ré-émettre vers Loro
-    sdkDocument._isRemoteApply = true;
-
-    for (const e of event.events) {
-      if (e.target.kind === "Text") {
-        applyTextDeltaToSdkjs(e);
-      } else if (e.target.kind === "Map") {
-        applyPropertyChangeToSdkjs(e);
-      } else if (e.target.kind === "List") {
-        applyStructuralChangeToSdkjs(e);
-      }
-    }
-
-    // Recalcul du layout et rafraîchissement du Canvas
-    sdkDocument.Recalculate();
-    sdkDocument.DrawingDocument.OnRecalculatePage();
-
-    sdkDocument._isRemoteApply = false;
+    isApplyingRemoteUpdate = true;
+    
+    const fakeArrayChanges = mapper.loroEventToArrayChanges(event);
+    sdkDocument.ApplyChanges(fakeArrayChanges); // Injection native
+    
+    // Le hook saveChanges d'ONLYOFFICE devra bloquer l'émission réseau si isApplyingRemoteUpdate === true
+    
+    isApplyingRemoteUpdate = false;
   }
 });
 ```

@@ -352,6 +352,13 @@ Si Alice (dans l'avion) et Charlie (sur terre) prennent tous les deux un documen
 À l'atterrissage, Loro considèrera qu'il s'agit de deux documents totalement distincts et refusera de les fusionner.
 *   **La Règle d'Or** : La résilience P2P fonctionne parfaitement à la condition stricte que le document ait été synchronisé au moins une fois (via son fichier caché `.loro` par exemple) avant la partition réseau, afin que tout le monde partage le même arbre d'identifiants.
 
+### 11.1 L'Auto-découverte P2P (mDNS / Bonjour)
+Dans ce scénario "Avion" (ou lors d'une coupure Internet d'entreprise), comment les clients d'Alice et Bob se trouvent-ils sur le réseau Wi-Fi local sans serveur central pour les mettre en relation ?
+C'est ici que l'application **ONLYOFFICE Desktop Editor** déploie toute sa puissance. Contrairement au client Web (navigateur classique) qui est bridé par des règles de sécurité (sandbox), le Desktop Editor embarque un environnement **Node.js** complet (via Electron/CEF).
+1. **Diffusion (Broadcast)** : Au lancement, notre pont Loro utilise les capacités réseau de Node.js pour diffuser un signal **mDNS** (Multicast DNS, technologie Bonjour/Avahi) sur le réseau local : *"Bonjour à tous, je suis en train d'éditer le document dont le Hash est XYZ sur mon port local 8080"*.
+2. **Écoute et Connexion** : L'ordinateur de Bob écoute passivement le réseau local. Lorsqu'il capte ce signal mDNS correspondant au document qu'il essaie d'ouvrir, il ne cherche plus à joindre le Routeur Rust sur Internet. Il ouvre directement une connexion WebSocket locale vers l'IP de l'ordinateur d'Alice (`ws://192.168.1.55:8080`).
+3. La salle de collaboration est ainsi recréée localement, de manière totalement invisible pour les utilisateurs !
+
 ---
 
 ## 12. Intégration Seafile et Sauvegarde (Le Callback)
@@ -518,3 +525,56 @@ L'architecture interne d'ONLYOFFICE (`sdkjs`) a été pensée de manière unifi�
 3. **Le Cold Start Universel** : Les trois éditeurs possèdent chacun leur propre fichier `fromToJSON.js` (`cell/fromToJSON.js`, `slide/fromToJSON.js`). La mécanique de désérialisation rapide depuis le cache Loro s'applique donc de manière rigoureusement identique pour Excel et PowerPoint.
 
 Notre pont CRDT est donc par essence **agnostique au format de fichier**. Il synchronise des objets DOM virtuels, faisant de cette architecture une solution universelle pour toute la suite bureautique.
+
+---
+
+## 18. Synchronisation des Curseurs (Awareness Channel)
+
+Si le moteur Loro CRDT excelle dans la sauvegarde de l'historique permanent du document (le texte tapé, le style modifié), il n'est **pas du tout adapté** pour synchroniser les mouvements frénétiques des curseurs de souris ou les sélections de texte temporaires. Stocker chaque déplacement de curseur dans l'historique immuable du CRDT ferait exploser la taille du fichier et l'usage de la RAM.
+
+Pour gérer cette intelligence collaborative, nous utilisons un **Canal d'Awareness (Awareness Channel)**.
+
+### Le Principe
+L'Awareness est un flux de données éphémères (qui ne sont pas écrites sur le disque).
+1. **Interception Éphémère** : Lorsque Bob sélectionne un paragraphe, ONLYOFFICE déclenche un événement interne de changement de sélection. Notre pont capte cet événement.
+2. **Le Payload Léger** : Le pont génère un petit objet JSON éphémère contenant :
+   * Son `peer_id` (Bob)
+   * Sa couleur assignée (Rouge)
+   * La position de son curseur (ex: *Paragraphe ID 123, offset 42*)
+3. **Le Réseau (Broadcast Agnostique)** : Ce flux JSON éphémère est multiplexé (envoyé comme un type de message différent) sur **la même connexion réseau que le CRDT**.
+   * *Sur Terre (Internet)* : Il passe par le Routeur Rust central.
+   * *Dans l'Avion (P2P mDNS)* : Il passe par la connexion directe (WebSocket local ou WebRTC) établie entre les pairs.
+   * Une limite d'envoi (Throttle) est fixée à 50ms pour ne pas saturer la bande passante.
+4. **L'Affichage Distant et la Transition** : Le client d'Alice reçoit ce JSON. Notre pont le traduit et demande à l'API publique d'ONLYOFFICE (`CCollaborativeCursor`) de dessiner le curseur rouge. Étant donné que ces données sont éphémères (pas d'historique), le passage du mode "Avion" (P2P) au mode "Terre" (Routeur) se fait instantanément et sans aucun besoin de réconciliation mathématique. Les curseurs s'affichent simplement à leur dernière position connue.
+### Pourquoi c'est élégant
+Si Bob se déconnecte subitement, le Routeur Rust détecte la perte du WebSocket et envoie un signal `UserLeft(Bob)` à tous les autres clients. Le pont d'Alice ordonne alors au moteur ONLYOFFICE d'effacer le curseur rouge de Bob.
+Tout ceci se passe **en dehors du CRDT**. Le document Word n'est jamais altéré par les mouvements de souris, garantissant une intégrité parfaite du `.docx` final tout en offrant une expérience "Temps Réel" ultra-fluide digne de Google Docs.
+
+---
+
+## 19. Limites Fonctionnelles et Compromis (Trade-offs)
+
+L'architecture décentralisée (CRDT + P2P) représente un changement de paradigme profond par rapport au Document Server centralisé de base d'ONLYOFFICE (ou à Office 365). Troquer "l'intelligence centralisée" pour "l'intelligence distribuée" (qui permet le vrai mode hors-ligne, la scalabilité infinie et la confidentialité absolue E2EE) entraîne mécaniquement l'abandon ou l'adaptation de certaines fonctionnalités natives :
+
+### 19.1 La perte du "Mode Strict" (Verrouillage explicite)
+ONLYOFFICE propose historiquement un mode **Strict** (un paragraphe est "verrouillé" par un utilisateur et invisible pour les autres tant qu'il ne sauvegarde pas). 
+Dans un système P2P offline-first, le verrouillage cryptographique est impossible à garantir de manière absolue (impossible de vérifier l'état d'un verrou sur serveur si l'on est hors-ligne dans un avion). 
+**Solution (Le Soft-Lock via Awareness)** : Nous pouvons recréer une illusion parfaite du mode Strict pour l'UX. Lorsqu'un utilisateur clique dans un paragraphe, le pont diffuse un message "Verrouillé" via le canal éphémère d'Awareness. Les autres clients reçoivent ce message et passent localement le paragraphe en "Lecture Seule" dans leur UI ONLYOFFICE. Ce verrouillage est "doux" (soft), mais il remplit 99% du besoin métier consistant à empêcher les collisions visuelles de frappe.
+
+### 19.2 Sécurité granulaire (Confiance Client)
+Dans des solutions comme Office 365, le serveur rejette activement les modifications sur des cellules protégées. 
+Notre Routeur Rust étant aveugle (Chiffrement E2EE), il ne lit pas le document. Si un utilisateur "hacke" son client ONLYOFFICE local pour modifier une plage Excel interdite, Loro l'acceptera mathématiquement. 
+**Solution (Enforcement côté Client & Audit)** : Nous déléguons la sécurité à l'interface client. Le jeton JWT de Seafile transmet les permissions (ACL). C'est le code de notre pont JavaScript qui verrouillera localement les cellules interdites dans l'UI d'ONLYOFFICE. Pour les environnements de très haute sécurité, l'historique immuable du CRDT (qui signe cryptographiquement chaque frappe) permet d'auditer le document *a posteriori* et d'annuler (rollback) mathématiquement toute modification frauduleuse.
+
+### 19.3 Historique des Versions (UI Native)
+L'UI native de l'historique d'ONLYOFFICE a l'habitude de dialoguer avec le Document Server pour récupérer les révisions (V1, V2). 
+Notre architecture délègue le stockage des révisions à **Seafile**. Par défaut, le bouton "Historique" de l'éditeur semblera cassé car le Document Server a disparu.
+**Solution (L'interception de l'API Historique)** : ONLYOFFICE expose publiquement les hooks `config.events.onRequestHistory` et `config.events.onRequestHistoryData`. Notre pont JavaScript interceptera le clic de l'utilisateur sur le bouton "Historique", exécutera une requête vers l'API native de Seafile pour récupérer les anciennes versions du fichier, et les réinjectera dans l'UI d'ONLYOFFICE. L'expérience utilisateur reste ainsi parfaitement fluide et intégrée.
+
+### 19.4 Génération de PDF et Publipostage Serveur
+Beaucoup d'entreprises utilisent l'API du Document Server pour générer des PDF sans ouvrir le document. Notre routeur relais ne possède pas le moteur C++ de rendu. 
+**Solution (Le Bot Headless Node.js)** : Puisque le client web est capable de générer le `.docx` et le `.pdf` localement en WASM (Edge Computing), nous pouvons déployer un microservice "Bot" (un script Node.js exécutant `sdkjs` sans interface graphique). Ce Bot se connecte discrètement au Routeur Rust comme un utilisateur fantôme. Il maintient l'état CRDT en permanence dans sa RAM. Lorsque le SI a besoin d'un PDF, il appelle l'API de ce Bot, qui génère le fichier instantanément sans surcharger de lourds serveurs C++ traditionnels.
+
+### 19.5 Le Chat Intégré (Désactivation au profit de Matrix)
+ONLYOFFICE possède un widget de chat intégré. Nous ne synchronisons pas ce chat dans le CRDT. 
+**Solution** : Conformément à la volonté de fédérer les communications via un client **Matrix** externe, nous pouvons désactiver ce widget pour éviter qu'il n'apparaisse "cassé". ONLYOFFICE prévoit exactement cela dans sa configuration d'initialisation. Il suffit de passer le paramètre `customization.chat = false` lors de l'instanciation de l'iframe pour masquer proprement toute trace de ce widget graphique, laissant la place nette à l'outil de communication du Système d'Information.
