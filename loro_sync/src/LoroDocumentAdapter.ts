@@ -1,84 +1,128 @@
 import { Loro, LoroList, LoroMap, LoroText } from "loro-crdt";
 
 /**
- * Adaptateur qui encapsule un document Loro (CRDT) pour représenter la structure d'un document OOXML.
- * Il modélise le document comme une liste (body) contenant des blocs (Map),
- * où chaque paragraphe (Map) possède un contenu textuel (Text).
+ * LoroDocumentAdapter - Approche "Industrielle" (Flat Node Registry)
+ * 
+ * Au lieu de modéliser manuellement chaque type de bloc OOXML (Paragraphe, Table, Run),
+ * nous créons un miroir générique du DOM d'ONLYOFFICE basé sur les InternalIds uniques.
  */
 export class LoroDocumentAdapter {
     private doc: Loro;
-    private body: LoroList;
+    // Registre plat contenant tous les nœuds du document
+    // Clé: InternalId (généré par sdkjs) -> Valeur: LoroMap modélisant l'élément
+    private nodes: LoroMap;
+    
+    // Nœud racine du document (ex: le body principal)
+    private rootId: string = "root";
 
     constructor(existingDoc?: Loro) {
         this.doc = existingDoc || new Loro();
-        this.body = this.doc.getList("body");
+        this.nodes = this.doc.getMap("nodes");
         
-        // Initialisation par défaut si le document est vide
-        if (this.body.length === 0) {
-            this.addParagraph(0);
+        // Initialisation de la racine si c'est un nouveau document
+        if (!this.nodes.has(this.rootId)) {
+            const rootNode = new LoroMap();
+            rootNode.set("type", "document_body");
+            rootNode.setContainer("children", new LoroList());
+            this.nodes.setContainer(this.rootId, rootNode);
         }
     }
 
-    /**
-     * Retourne l'instance brute de Loro (utile pour la synchronisation réseau).
-     */
     public getDoc(): Loro {
         return this.doc;
     }
 
     /**
-     * Ajoute un nouveau paragraphe à un index donné dans le document.
+     * Crée ou met à jour un nœud générique.
+     * @param internalId L'ID unique généré par sdkjs (ex: oParagraph.InternalId)
+     * @param nodeType Le type du nœud (ex: "Paragraph", "Run", "Table")
      */
-    public addParagraph(index: number): void {
-        // Dans Loro v0.16+, on instancie directement le conteneur
-        const paraMap = this.body.insertContainer(index, new LoroMap());
-        paraMap.set("type", "paragraph");
-        paraMap.set("style", "Normal");
-        
-        // On attache un conteneur "Text" pour le contenu du paragraphe
-        paraMap.setContainer("content", new LoroText());
-    }
+    public registerNode(internalId: string, nodeType: string): LoroMap {
+        if (!this.nodes.has(internalId)) {
+            const nodeMap = new LoroMap();
+            nodeMap.set("type", nodeType);
+            
+            // Propriétés du nœud (formatage, marges, etc.)
+            nodeMap.setContainer("props", new LoroMap());
+            
+            // Si le nœud peut contenir d'autres nœuds, on lui prépare une liste d'enfants
+            nodeMap.setContainer("children", new LoroList());
+            
+            // S'il s'agit d'un nœud textuel (CRun), on prépare son buffer texte
+            if (nodeType === "Run" || nodeType === "Text") {
+                nodeMap.setContainer("text", new LoroText());
+            }
 
-    /**
-     * Supprime un paragraphe entier.
-     */
-    public removeParagraph(index: number): void {
-        this.body.delete(index, 1);
-    }
-
-    /**
-     * Insère du texte à une position précise dans un paragraphe existant.
-     */
-    public insertText(paraIndex: number, offset: number, text: string): void {
-        const paraMap = this.getParagraphMap(paraIndex);
-        const content = paraMap.get("content") as LoroText;
-        content.insert(offset, text);
-    }
-
-    /**
-     * Supprime du texte dans un paragraphe existant.
-     */
-    public deleteText(paraIndex: number, offset: number, length: number): void {
-        const paraMap = this.getParagraphMap(paraIndex);
-        const content = paraMap.get("content") as LoroText;
-        content.delete(offset, length);
-    }
-
-    /**
-     * Lit le contenu textuel complet d'un paragraphe.
-     */
-    public getParagraphText(paraIndex: number): string {
-        const paraMap = this.getParagraphMap(paraIndex);
-        const content = paraMap.get("content") as LoroText;
-        return content.toString();
-    }
-
-    private getParagraphMap(index: number): LoroMap {
-        const paraMap = this.body.get(index) as LoroMap;
-        if (!paraMap || paraMap.get("type") !== "paragraph") {
-            throw new Error(`Le bloc à l'index ${index} n'est pas un paragraphe valide.`);
+            this.nodes.setContainer(internalId, nodeMap);
         }
-        return paraMap;
+        return this.nodes.get(internalId) as LoroMap;
+    }
+
+    /**
+     * Supprime un nœud du registre.
+     */
+    public unregisterNode(internalId: string): void {
+        this.nodes.delete(internalId);
+    }
+
+    /**
+     * Met à jour une propriété (Gras, Italique, Taille...) sur un nœud.
+     * Automatiquement "future-proof" peu importe les nouveautés de sdkjs.
+     */
+    public setNodeProperty(internalId: string, propKey: string, propValue: any): void {
+        const node = this.nodes.get(internalId) as LoroMap;
+        if (!node) return;
+        
+        const props = node.get("props") as LoroMap;
+        props.set(propKey, propValue);
+    }
+
+    /**
+     * Insère un enfant dans l'arborescence.
+     */
+    public insertChild(parentId: string, childId: string, index: number): void {
+        const parent = this.nodes.get(parentId) as LoroMap;
+        if (!parent) return;
+
+        const children = parent.get("children") as LoroList;
+        children.insert(index, childId);
+    }
+
+    /**
+     * Retire un enfant de l'arborescence sans le supprimer du registre.
+     */
+    public removeChild(parentId: string, index: number): void {
+        const parent = this.nodes.get(parentId) as LoroMap;
+        if (!parent) return;
+
+        const children = parent.get("children") as LoroList;
+        children.delete(index, 1);
+    }
+
+    /**
+     * Insère du texte dans un conteneur textuel (ex: CRun).
+     */
+    public insertText(internalId: string, offset: number, text: string): void {
+        const node = this.nodes.get(internalId) as LoroMap;
+        if (!node) return;
+
+        const loroText = node.get("text") as LoroText;
+        if (loroText) {
+            loroText.insert(offset, text);
+        }
+    }
+
+    /**
+     * Supprime du texte dans un conteneur textuel.
+     */
+    public deleteText(internalId: string, offset: number, length: number): void {
+        const node = this.nodes.get(internalId) as LoroMap;
+        if (!node) return;
+
+        const loroText = node.get("text") as LoroText;
+        if (loroText) {
+            loroText.delete(offset, length);
+        }
     }
 
     // --- Méthodes de synchronisation réseau ---

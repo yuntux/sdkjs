@@ -1,11 +1,12 @@
 {
   "name": "eurooffice-loro-sync",
   "version": "1.0.0",
+  "type": "module",
   "description": "Binding CRDT Loro pour le moteur sdkjs d'EuroOffice",
   "main": "dist/index.js",
   "scripts": {
-    "build": "tsc",
-    "watch": "tsc -w",
+    "build": "vite build",
+    "watch": "vite build --watch",
     "test": "vitest run"
   },
   "dependencies": {
@@ -13,6 +14,9 @@
   },
   "devDependencies": {
     "typescript": "^5.4.5",
+    "vite": "^8.2.2",
+    "vite-plugin-top-level-await": "^1.6.0",
+    "vite-plugin-wasm": "^3.6.0",
     "vitest": "^1.6.0"
   }
 }

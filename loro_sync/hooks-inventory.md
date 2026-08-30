@@ -42,9 +42,10 @@ SDKJS gère le formatage en découpant les chaînes de texte continues (`CRun`).
     *   `SetSpacing(spacingObj)`
 *   **Action Loro correspondante** : Récupérer la `LoroMap` représentant ce paragraphe dans le `LoroDoc`, et appeler `map.set("alignment", "center")`.
 
-## 4. Stratégie d'Interception (Monkey-Patching)
+## 4. Stratégie d'Interception (Monkey-Patching miroir)
 
-Dans le fichier `loro_sync/src/interceptor.ts` (Phase 3), l'interception ressemblera à ceci :
+Plutôt que d'avoir un fichier géant, nous organiserons nos fichiers d'interception en **miroir parfait de l'arborescence de sdkjs**.
+Par exemple, pour `CParagraph` (qui est dans `word/Editor/Paragraph.js`), l'interception se fera dans le fichier `loro_sync/src/hooks/word/Editor/Paragraph.ts` :
 
 ```typescript
 function patchParagraphAdd() {
