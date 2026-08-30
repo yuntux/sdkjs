@@ -476,15 +476,43 @@ Utilisez cette section pour suivre l'avancement concret du projet par rapport au
 - [x] Isoler le moteur réseau d'ONLYOFFICE (Monkey-Patching de `AscCommon.CDocsCoApi` via `Injector.ts`).
 - [x] Définir la structure du Registre Plat (`LoroDocumentAdapter`).
 
-### Phase 3 : Le Pont "Passe-Plat" et le Cold Start
+### Phase 3 : Le Pont "Passe-Plat" et le Cold Start (Le MVP)
 - [ ] Créer la coquille vide de `ArrayChangesMapper.ts`.
 - [ ] Implémenter le hook de capture locale : router le flux `arrayChanges` vers le Mapper.
 - [ ] Implémenter le "Mutation Guard" (verrou anti-écho) pour bloquer les boucles de synchronisation.
 - [ ] Implémenter la structure arborescente avec `LoroTree` (remplace les LoroList).
 - [ ] Créer le tampon heuristique (debounce) pour convertir les Delete+Insert en `LoroTree.move()`.
 - [ ] Rédiger le code de désérialisation rapide (Cold Start : Loro ➔ JSON ➔ `FromJSON`).
-- [ ] Cartographier le code magique de l'édition de texte simple.
-- [ ] Cartographier les codes magiques du formatage (Gras, Italique, Polices).
+
+**Cartographie des 15 codes vitaux (Le MVP) :**
+- [ ] Cartographier : Insertion et suppression de caractères (Text Runs).
+- [ ] Cartographier : Insertion et suppression de Paragraphes.
+- [ ] Cartographier : Propriétés de formatage Inline (Gras, Italique, Souligné, Police, Couleur).
+- [ ] Cartographier : Propriétés de Paragraphe (Alignement, Interligne, Marges).
+- [ ] Cartographier : Création et suppression de Tableaux simples (Tables).
+- [ ] Cartographier : Ajout et suppression de Lignes (Rows) et Cellules (Cells).
+- [ ] Cartographier : Listes à puces et Numérotations (Numbering).
+
+### Phase 3.5 : Cartographie exhaustive (La Cible Finale)
+*Ces éléments sont purement du mapping JSON/Type. L'architecture réseau (MVP) n'a pas besoin d'être modifiée.*
+- [ ] Cartographier : Fusion et division de cellules (`colspan` / `rowspan`).
+- [ ] Cartographier : Images inline et Images ancrées (Flottantes).
+- [ ] Cartographier : Formes vectorielles DrawingML (Shapes, Lignes, Connecteurs).
+- [ ] Cartographier : En-têtes (Headers) et Pieds de page (Footers).
+- [ ] Cartographier : Notes de bas de page (Footnotes) et de fin (Endnotes).
+- [ ] Cartographier : Commentaires collaboratifs (Annotations).
+- [ ] Cartographier : Hyperliens et Signets (Bookmarks).
+- [ ] Cartographier : Table des matières automatique (TOC).
+- [ ] Cartographier : Renvois et Références croisées (Cross-references).
+- [ ] Cartographier : Équations Mathématiques (MathType/OMML).
+- [ ] Cartographier : SmartArts (Arbres hiérarchiques complexes).
+- [ ] Cartographier : Graphiques sectoriels/histogrammes (Charts).
+- [ ] Cartographier : Objets OLE (ex: PDF ou Excel intégrés dans Word).
+- [ ] Cartographier : Groupement d'objets (Group Shapes / Canvas).
+- [ ] Cartographier : Contrôles de contenu (Content Controls / Formulaires).
+- [ ] Cartographier : Sauts de page et Sauts de section.
+- [ ] Cartographier : Filigranes (Watermarks).
+- [ ] Cartographier : Thèmes du document (Jeux de couleurs/polices globaux).
 
 ### Phase 4 : Routeur Rust et Seafile
 - [ ] Bootstraper le Routeur Rust (Axum + Tokio + WebSockets).
@@ -524,12 +552,18 @@ Utilisez cette section pour suivre l'avancement concret du projet par rapport au
 ### Matrice de couverture des nœuds OOXML
 
 > [!NOTE]
-> **Pourquoi cette matrice persiste-t-elle si l'architecture est générique ?**
-> Même si l'interception (`arrayChanges`) est universelle et automatique pour tous les objets, le **contenu** des deltas interceptés est cryptique.
-> Les jours estimés dans le tableau ci-dessous ne représentent plus l'écriture de "hooks", mais l'effort d'**investigation et de traduction** :
-> 1. Rétro-ingénierie : Comprendre à quoi correspond un code magique (ex: `Type: 58` = Fusion de cellules).
-> 2. L'ajouter au dictionnaire `ArrayChangesMapper.ts`.
-> 3. Étudier la structure JSON native d'ONLYOFFICE de cet objet pour s'assurer que le processus de *Cold Start* (`FromJSON`) puisse le reconstruire parfaitement depuis la mémoire Loro.
+> **Propriétés génériques vs Structures spécifiques : Pourquoi cette matrice persiste-t-elle ?**
+> Il est crucial de comprendre la nuance entre ce qui est automatisé par le pont et ce qui nécessite un travail humain :
+> 
+> **1. Ce qui EST 100% générique (Zéro effort)**
+> Si ONLYOFFICE ajoute une nouvelle propriété visuelle simple (ex: "Ombre 3D"), `arrayChanges` émet un delta propre : `{ "Id": "para_1", "Prop": { "Shadow": true } }`. Notre pont prend l'objet `Prop` et l'injecte aveuglément dans Loro. Le réseau le synchronise automatiquement, sans que nous ayons besoin de savoir ce qu'est une Ombre 3D.
+> 
+> **2. Ce qui N'EST PAS générique (L'effort chiffré dans la matrice)**
+> Dès que l'on touche à la hiérarchie ou à des objets métier complexes (Fusion de cellules, SmartArts, Graphiques Excel), ONLYOFFICE n'utilise plus de simples propriétés. 
+> *   **Les actions cryptiques** : ONLYOFFICE émet des codes magiques (ex: `{ "Type": 58, "Id": "cell_1" }`). Il faut faire de la rétro-ingénierie pour deviner que `Type 58` veut dire "Fusion" et l'apprendre au `ArrayChangesMapper.ts`.
+> *   **Le Cold Start (Démarrage à froid)** : Lors du chargement initial d'un document, ONLYOFFICE exige une structure JSON d'une précision chirurgicale pour la méthode `FromJSON`. Si nous ne connaissons pas l'anatomie exacte attendue par ONLYOFFICE pour un "Graphique Sectoriel", le pont ne saura pas le reconstruire depuis Loro et l'éditeur plantera.
+> 
+> Les jours estimés ci-dessous chiffrent donc **l'investigation de ces codes cryptiques et la maîtrise de l'anatomie JSON** de chaque nouvel objet lourd.
 
 | Catégorie de nœuds | MVP | Extension | Complexité du mapping | Effort estimé |
 |---|---|---|---|---|

@@ -152,13 +152,15 @@ Dans le CRDT Loro, nous ne modélisons pas un arbre profond complexe avec des ob
 *   **Propriétés (Le secret industriel)** : Au lieu d'intercepter `SetBold()`, `SetRotation()`, etc., nous interceptons les mutations envoyées par ONLYOFFICE. Loro ne se soucie pas de ce qu'est la propriété, il synchronise juste des clés/valeurs JSON.
 *   **Texte** : Seules les insertions de caractères appellent de manière spécifique `LoroText.insert()`.
 
-**Avantage décisif** : Cette approche miroir est "future-proof". Si ONLYOFFICE ajoute le support d'une nouvelle ombre 3D dans sa prochaine version, notre code n'aura *absolument pas* besoin d'être mis à jour. Loro synchronisera la nouvelle clé JSON de l'ombre 3D automatiquement.
+**Avantage décisif (Le zéro-maintenance)** : Si ONLYOFFICE ajoute le support d'une nouvelle ombre 3D dans sa prochaine version, notre code n'aura *absolument pas* besoin d'être mis à jour. Loro synchronisera la nouvelle clé JSON de l'ombre 3D automatiquement.
 
-### L'Élégance du système (Pourquoi nous n'avons pas à coder de Diff complexe)
-Si ONLYOFFICE nous renvoyait l'état entier d'un paragraphe à chaque frappe (un énorme JSON très profond), l'injecter d'un coup dans Loro (`props.set("all", { ... })`) casserait la magie du CRDT (écrasement global LWW) et polluerait le réseau. Il faudrait écrire un algorithme de comparaison (Diff) récursif complexe.
-**La bonne nouvelle : le système `arrayChanges` résout ce problème nativement.**
-Le moteur OT interne d'ONLYOFFICE fait *déjà* le calcul d'atomicité et de diff ! Le tableau `arrayChanges` que nous interceptons ne contient jamais d'objets profonds redondants. Il contient exclusivement des deltas ultra-précis (ex: *Uniquement* la couleur de la bordure a changé). 
-*   **Résultat** : Notre pont Loro n'a pas besoin de faire de comparaison récursive coûteuse en performance. Il se contente de prendre la valeur atomique fournie par l'OT (`{"Bold": true}`) et de l'appliquer bêtement dans la `LoroMap`. La granularité du CRDT est donc assurée *gratuitement* par le moteur ONLYOFFICE.
+### L'Élégance de l'interception (`arrayChanges` vs Monkey-Patching)
+
+Lors de la phase de conception initiale, il avait été envisagé de surcharger (*monkey-patcher*) chaque méthode individuelle d'ONLYOFFICE (`SetBold()`, `MergeCells()`, `InsertTable()`, etc.). **Nous avons catégoriquement abandonné cette approche au profit du canal unique `arrayChanges` pour 3 raisons économiques écrasantes :**
+
+1. **Rétro-ingénierie "Black-Box" instantanée** : Trouver la méthode `MergeCells` dans les 40 000 lignes du code legacy de sdkjs prend des heures. Avec `arrayChanges`, il suffit de cliquer sur "Fusionner" dans l'interface pour voir le JSON s'afficher dans la console : `[{"Type": 58, "Id": "cell_1"}]`. L'investigation prend 5 secondes.
+2. **Le Volume de Code (1 Hook vs 500 Hooks)** : Intercepter manuellement nécessitait de coder, tester et maintenir des centaines de points d'injection (un par bouton). Avec l'approche actuelle, il y a **un seul point d'injection réseau**. L'extension se limite à un dictionnaire (`switch/case`).
+3. **Le Batching (Atomicité gratuite)** : Si un utilisateur colle un énorme tableau, l'éditeur appelle nativement `CreateCell()` 1000 fois. Surcharger cette méthode aurait généré 1000 messages réseau (risque de saturation). Le moteur `arrayChanges`, lui, attend la fin du *Paste* et émet un seul Delta atomique pré-calculé. Le Diff et le Batching nous sont offerts gratuitement !
 
 ### Le Pont "Passe-Plat" (arrayChanges ↔ Loro)
 Le système repose sur la traduction simultanée entre l'OT centralisé (ONLYOFFICE) et le CRDT décentralisé (Loro) via l'`InternalId` comme "plaque d'immatriculation" :
