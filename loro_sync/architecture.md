@@ -140,12 +140,15 @@ Pour éviter de devoir coder manuellement la synchronisation des *milliers* de p
 
 ### Le Registre Plat (Flat Node Registry)
 Chaque élément dans `sdkjs` (du paragraphe à la forme vectorielle) possède un identifiant unique généré par le moteur : l'`InternalId`.
-Dans le CRDT Loro, nous ne modélisons pas un arbre profond complexe. Nous créons un registre plat :
+Dans le CRDT Loro, nous ne modélisons pas un arbre profond complexe avec des objets personnalisés imbriqués. Nous créons un registre plat couplé à un `LoroTree` :
 `const nodes = doc.getMap("nodes");`
+`const tree = doc.getTree("dom");`
 
-### La Traduction Automatique
-*   **Création de nœud** : Lorsqu'un élément est instancié dans ONLYOFFICE, on crée génériquement une `LoroMap` avec la clé `InternalId`.
-*   **Hiérarchie** : Chaque `LoroMap` contient une `LoroList` nommée `children` qui stocke simplement les `InternalId` de ses enfants dans l'ordre. Le déplacement d'une section entière devient un simple déplacement d'ID dans une liste Loro.
+### La Traduction Automatique et le Déplacement (Move)
+*   **Création de nœud** : Lorsqu'un élément est instancié dans ONLYOFFICE, on crée génériquement une `LoroMap` (pour ses propriétés) avec la clé `InternalId`.
+*   **Hiérarchie et Déplacement (LoroTree)** : L'arborescence du document (qui est le parent de qui) est gérée par la structure spécialisée `LoroTree`.
+    *   Le moteur OT d'ONLYOFFICE n'a pas de commande "Déplacer". Il émet toujours une "Suppression" suivie immédiatement d'une "Insertion".
+    *   Notre pont utilise un tampon heuristique (debounce de quelques millisecondes). S'il détecte un *Delete* et un *Insert* du même `InternalId` dans la même rafale de `arrayChanges`, il le traduit en un appel unique et atomique vers le CRDT : `tree.move(InternalId, NouveauParentId)`. Cela protège la sémantique de l'objet et évite sa recréation.
 *   **Propriétés (Le secret industriel)** : Au lieu d'intercepter `SetBold()`, `SetRotation()`, etc., nous interceptons les mutations envoyées par ONLYOFFICE. Loro ne se soucie pas de ce qu'est la propriété, il synchronise juste des clés/valeurs JSON.
 *   **Texte** : Seules les insertions de caractères appellent de manière spécifique `LoroText.insert()`.
 
@@ -171,6 +174,12 @@ Le système repose sur la traduction simultanée entre l'OT centralisé (ONLYOFF
    - Cet objet est injecté dans le moteur de rendu d'ONLYOFFICE qui l'ingère naturellement pour dessiner l'écran.
 
 Cette double architecture permet d'avoir la robustesse de l'affichage d'ONLYOFFICE tout en bénéficiant de la magie hors-ligne et P2P du CRDT.
+
+### 7.1 Gestion du Undo / Redo (Time-Travel Local)
+Un défi majeur de la co-édition Temps Réel est la fonction "Annuler" (Ctrl+Z). Si Alice et Bob tapent dans le même paragraphe, et qu'Alice fait Ctrl+Z, le moteur natif d'ONLYOFFICE (pensé pour être centralisé) risque d'effacer les caractères que Bob vient de taper.
+Pour résoudre cela, **nous désactivons le gestionnaire d'historique natif d'ONLYOFFICE**.
+À la place, nous interceptons les événements clavier Ctrl+Z / Ctrl+Y (ou les clics sur les boutons de la barre d'outils) et nous les redirigeons vers l'API **Time-Travel de Loro** (`loro.undo()` / `loro.redo()`).
+Loro étant un CRDT, son moteur d'Undo mathématique isole parfaitement les causalités : il va annuler exclusivement les frappes générées par le `peer_id` local d'Alice, sans jamais toucher aux caractères insérés par Bob au même endroit, garantissant une intégrité absolue.
 
 ---
 
@@ -250,6 +259,7 @@ Les fichiers binaires lourds (images de 5 Mo, graphiques Excel intégrés) ne do
 2. **Blob Store P2P** : Le fichier est envoyé à notre Routeur Rust (qui agit comme un serveur de fichiers statiques miniature).
 3. **Ancrage Loro** : Le routeur renvoie un Hash/URL (ex: `blob:sha256:abc123`). Ce Hash est injecté dans le CRDT.
 4. **Récupération** : Les autres pairs téléchargent l'image depuis le routeur de manière asynchrone pour l'afficher sur leur Canvas.
+5. **Lazy Loading et Frustum Culling (Optimisation VRAM)** : Pour éviter le crash mémoire (OOM) sur les documents contenant des centaines d'images, notre pont intercepte la méthode `CImageDrawing.prototype.Draw`. L'image n'est téléchargée et décodée (`createImageBitmap`) **que** lorsque sa boîte englobante croise le viewport (l'écran visible) de l'utilisateur. Si l'image sort de l'écran, son buffer GPU est libéré (`bitmap.close()`).
 
 Pour les clients Desktop, les chemins locaux (`file:///C:/temp/...`) sont de la même manière interceptés, uploadés en arrière-plan, puis remplacés par les URLs publiques avant d'être inscrits dans Loro.
 
@@ -578,3 +588,15 @@ Beaucoup d'entreprises utilisent l'API du Document Server pour générer des PDF
 ### 19.5 Le Chat Intégré (Désactivation au profit de Matrix)
 ONLYOFFICE possède un widget de chat intégré. Nous ne synchronisons pas ce chat dans le CRDT. 
 **Solution** : Conformément à la volonté de fédérer les communications via un client **Matrix** externe, nous pouvons désactiver ce widget pour éviter qu'il n'apparaisse "cassé". ONLYOFFICE prévoit exactement cela dans sa configuration d'initialisation. Il suffit de passer le paramètre `customization.chat = false` lors de l'instanciation de l'iframe pour masquer proprement toute trace de ce widget graphique, laissant la place nette à l'outil de communication du Système d'Information.
+
+---
+
+## 20. Opportunités Futures (v2) : Le Branching (Git pour le texte)
+
+Afin de livrer un MVP robuste, notre architecture se concentre sur l'usage "Temps Réel" du CRDT (à la Google Docs). Cependant, le moteur Loro offre des capacités de gestion d'historique non-linéaire extrêmement puissantes que nous pourrons exploiter dans une version ultérieure :
+
+**Le Branching & Merging (Workflow Asynchrone)** :
+À l'image de Git pour les développeurs, Loro supporte la création de "Branches" de document.
+*   **Le Cas d'usage** : Un utilisateur souhaite proposer une réécriture complète d'un chapitre d'un contrat sans perturber le document principal sur lequel travaillent ses collègues.
+*   **La Mécanique** : Le client ONLYOFFICE crée un *Fork* local en mémoire (`doc.fork()`). L'utilisateur travaille isolé pendant plusieurs jours. Lorsqu'il a terminé, il déclenche un `doc.merge(branch)`.
+*   **La Magie CRDT** : Contrairement au mode "Suivi des modifications" classique, Loro fusionnera mathématiquement le paragraphe réécrit avec les autres corrections orthographiques que ses collègues auraient pu faire sur le document principal (*Main*) entre-temps, avec une résolution de conflits sémantique et déterministe.

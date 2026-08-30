@@ -455,28 +455,81 @@ loroDoc.subscribe((event) => {
 | Phase | Durée | Livrable principal | Risque |
 |---|---|---|---|
 | **0 — Préparation** | 3j | Environnement de dev + CI + note juridique | Faible |
-| **1 — Analyse sdkjs** | 5j | `sdkjs-dom-map.md` + `hooks-inventory.md` | Moyen (code non documenté) |
-| **2 — Binding Loro** | 6j | Package `@eurooffice/loro-bridge` testé | Moyen (choix de granularité) |
-| **3 — Interception** | 11j | Co-édition texte + formatage + tableaux simples | **Élevé** (mapping offsets) |
+| **1 — Analyse sdkjs** | 5j | `sdkjs-dom-map.md` + `hooks-inventory.md` | Moyen |
+| **2 — Binding Loro** | 6j | Package `@eurooffice/loro-bridge` testé | Moyen |
+| **3 — Interception** | 11j | Mapper universel `arrayChanges` et Cold Start | **Élevé** |
 | **4 — Serveur relais** | 7j | Container Docker `loro-relay` + persistance | Faible |
-| **5 — Stabilisation** | 10-13j | Anti-écho, curseurs, fuzz, Track Changes | **Élevé** (cas limites) |
-| **6 — Démo** | 4j | POC fonctionnel intégré Seafile | Faible |
-| **TOTAL** | **~6-8 semaines** | | |
+| **5 — Stabilisation** | 10j | Anti-écho, curseurs éphémères, Fuzz Testing | **Élevé** |
+| **6 — Extensions & Démo** | 4j | Intégration Seafile, Tableur, Lazy Loading Images | Moyen |
+| **7 — Desktop Editors** | 8j | Auto-découverte mDNS P2P (Node.js) | Moyen |
+
+---
+
+## Plan d'Exécution Détaillé (Checklist d'Implémentation)
+
+Utilisez cette section pour suivre l'avancement concret du projet par rapport aux décisions documentées dans `architecture.md`.
+
+### Phase 0 à 2 : Fondations
+- [x] Initialiser le dépôt Vite (ESM + WASM) avec Loro CRDT (`package.json`, `vite.config.ts`).
+- [x] Créer le Dockerfile de développement.
+- [x] Rédiger la stratégie globale (`architecture.md`, `tests_strategy.md`).
+- [x] Isoler le moteur réseau d'ONLYOFFICE (Monkey-Patching de `AscCommon.CDocsCoApi` via `Injector.ts`).
+- [x] Définir la structure du Registre Plat (`LoroDocumentAdapter`).
+
+### Phase 3 : Le Pont "Passe-Plat" et le Cold Start
+- [ ] Créer la coquille vide de `ArrayChangesMapper.ts`.
+- [ ] Implémenter le hook de capture locale : router le flux `arrayChanges` vers le Mapper.
+- [ ] Implémenter le "Mutation Guard" (verrou anti-écho) pour bloquer les boucles de synchronisation.
+- [ ] Implémenter la structure arborescente avec `LoroTree` (remplace les LoroList).
+- [ ] Créer le tampon heuristique (debounce) pour convertir les Delete+Insert en `LoroTree.move()`.
+- [ ] Rédiger le code de désérialisation rapide (Cold Start : Loro ➔ JSON ➔ `FromJSON`).
+- [ ] Cartographier le code magique de l'édition de texte simple.
+- [ ] Cartographier les codes magiques du formatage (Gras, Italique, Polices).
+
+### Phase 4 : Routeur Rust et Seafile
+- [ ] Bootstraper le Routeur Rust (Axum + Tokio + WebSockets).
+- [ ] Implémenter l'authentification aveugle (Validation JWT sans accès au contenu).
+- [ ] Mettre en place le Blob Store (intercept. des uploads d'images ➔ Stockage temporaire ➔ Renvoi d'un Hash au client).
+- [ ] Implémenter le "Client-Side Callback" : hooker le bouton "Sauvegarder" pour envoyer le snapshot final à Seafile.
+- [ ] Mettre en place l'interception de l'historique Seafile pour restaurer le bouton natif ONLYOFFICE (Section 19.3).
+
+### Phase 5 : Awareness, Tests et Optimisations
+- [x] Créer le gestionnaire de "Lazy Loading / Frustum Culling" pour les images (`lazyImageLoader.ts`).
+- [ ] Remplacer le `Undo/Redo` natif (Ctrl+Z) par l'API Time-Travel de Loro (Section 7.1).
+- [ ] Câbler l'API native `CCollaborativeCursor` avec le canal éphémère (Awareness) pour les curseurs distants limités à 50ms.
+- [ ] Implémenter le "Soft-Lock" visuel (Mode Strict émulé) via l'Awareness.
+- [ ] Désactiver le chat interne (`customization.chat = false`) pour intégration Matrix.
+- [ ] Rédiger la suite E2E Playwright de vérification de convergence.
+- [ ] Mettre en place le Bot Node.js "Headless" pour la génération PDF côté serveur.
+
+### Phase 6 & 7 : Multi-formats et Desktop
+- [ ] Validation croisée du Mapper `ArrayChangesMapper.ts` sur Excel (`cell`) et PowerPoint (`slide`).
+- [ ] Injecter le pont Loro dans l'environnement Chromium/Node.js de l'application Desktop.
+- [ ] Implémenter la diffusion et l'écoute mDNS (Auto-découverte P2P locale).
+- [ ] Gérer la bascule asynchrone (Mode Avion ➔ Internet) pour le routage de l'Awareness et du CRDT.
 
 ---
 
 ## MVP vs Extensions : clarification architecturale
 
 > [!IMPORTANT]
-> **L'architecture est intégralement posée par le MVP (Phases 0-6).** Tout le reste — plus de types de nœuds OOXML, le tableur, les slides — est du **travail incrémental de (dé)sérialisation**. Chaque nouveau type de nœud suit exactement le même pattern :
-> 1. Identifier les méthodes de mutation dans sdkjs (ex: `CShape.setRotation()`)
-> 2. Mapper vers un conteneur Loro (`LoroMap`, `LoroList`, `LoroText`)
-> 3. Ajouter le hook d'interception (capture locale) et le handler d'application (delta distant)
-> 4. Écrire les tests de convergence associés
+> **L'architecture est intégralement posée par le MVP (Phases 0-6).** Tout le reste — plus de types de nœuds OOXML, le tableur, les slides — est du **travail incrémental de (dé)sérialisation**. Grâce à notre approche universelle (`arrayChanges`), nous n'avons **plus aucun hook métier à écrire**. Chaque nouveau type de nœud suit ce pattern extrêmement simple :
+> 1. Jouer avec l'objet dans ONLYOFFICE et capturer les codes magiques émis dans `arrayChanges` (ex: `Type: 42` = Rotation).
+> 2. Ajouter la traduction de ce code dans notre dictionnaire central `ArrayChangesMapper.ts`.
+> 3. S'assurer que le pont de démarrage (Cold Start) génère bien la bonne structure JSON pour cet objet avant d'appeler `FromJSON`.
+> 4. Écrire les tests de convergence (via Playwright) associés.
 >
-> **Aucune modification d'architecture** n'est nécessaire : le pont, le MutationGuard, le relais Rust et la persistance restent identiques.
+> **Aucune modification d'architecture** n'est nécessaire : le pont, le MutationGuard, le relais Rust et la persistance restent identiques pour tous les formats.
 
 ### Matrice de couverture des nœuds OOXML
+
+> [!NOTE]
+> **Pourquoi cette matrice persiste-t-elle si l'architecture est générique ?**
+> Même si l'interception (`arrayChanges`) est universelle et automatique pour tous les objets, le **contenu** des deltas interceptés est cryptique.
+> Les jours estimés dans le tableau ci-dessous ne représentent plus l'écriture de "hooks", mais l'effort d'**investigation et de traduction** :
+> 1. Rétro-ingénierie : Comprendre à quoi correspond un code magique (ex: `Type: 58` = Fusion de cellules).
+> 2. L'ajouter au dictionnaire `ArrayChangesMapper.ts`.
+> 3. Étudier la structure JSON native d'ONLYOFFICE de cet objet pour s'assurer que le processus de *Cold Start* (`FromJSON`) puisse le reconstruire parfaitement depuis la mémoire Loro.
 
 | Catégorie de nœuds | MVP | Extension | Complexité du mapping | Effort estimé |
 |---|---|---|---|---|
