@@ -109,13 +109,22 @@ export class LoroDocumentAdapter {
             ...props // On injecte toutes les propriétés visuelles interceptées
         };
 
-        // --- 2. L'Anatomie Spécifique (Le "Mapping") ---
+        // --- 2. L'Anatomie Spécifique (Le "Mapping" de Phase 3.5) ---
         
         // Texte
         if (type === "Run" || type === "Text") {
             const loroText = nodeData.get("text") as LoroText;
             result["Text"] = loroText ? loroText.toString() : "";
         }
+        
+        // Formes / Images (Récupération des blobs depuis Seafile si besoin)
+        if (type === "Image" || type === "OleObject") {
+            result["DataHash"] = props["BlobHash"] || props["DataHash"];
+        }
+
+        // Mathématiques & SmartArts
+        if (type === "MathEquation") result["OmmlString"] = props["Omml"];
+        if (type === "SmartArt") result["SmartArtLayoutId"] = props["Layout"];
         
         // Enfants (Récursivité)
         const children = treeNode.children();
@@ -126,8 +135,12 @@ export class LoroDocumentAdapter {
             }
         }
 
-        // TODO: Mappings spécifiques (Tableaux, Images, SmartArts...)
-        // Si type === "Table", restructurer result["Elements"] en tr/td
+        // Restructuration spécifique (Ex: Tableaux OOXML nécessitent une structure hiérarchique stricte)
+        if (type === "Table" && result["Elements"]) {
+            // Le moteur OOXML attend potentiellement un sous-tableau "Rows"
+            result["Rows"] = result["Elements"];
+            delete result["Elements"];
+        }
         
         return result;
     }

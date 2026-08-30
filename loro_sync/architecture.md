@@ -184,7 +184,16 @@ Le système repose sur la traduction simultanée entre l'OT centralisé (ONLYOFF
 
 Cette double architecture permet d'avoir la robustesse de l'affichage d'ONLYOFFICE tout en bénéficiant de la magie hors-ligne et P2P du CRDT.
 
-### 7.3 Gestion du Undo / Redo (Time-Travel Local)
+### 7.3 L'Exhaustivité Algorithmique : Le Générateur de Mapper
+ONLYOFFICE possède près de **1250 "Codes Magiques"** distincts d'Action OT (appelés `Types` dans l'arrayChanges), encapsulant chaque action possible : de l'insertion d'une simple puce de liste à la redéfinition d'un axe 3D sur un graphique de surface.
+Écrire un `switch/case` manuel pour 1250 types serait à la fois fastidieux, source d'erreurs, et instable face aux futures mises à jour du moteur.
+
+Pour garantir une exhaustivité mathématique absolue, l'architecture Loro-ONLYOFFICE repose sur un générateur dynamique (`scripts/generate_mapper.js`) :
+1. **La Source de Vérité Unique** : Le générateur parse directement le fichier natif d'ONLYOFFICE `common/HistoryCommon.js`, qui contient 100% de la structure de l'historique du moteur (Document, Tableur, et Présentation).
+2. **Le Décodage Bitwise** : Il résout les opérations binaires (`<< 16` et `|`) utilisées par l'équipe d'Ascensio System pour chiffrer l'ID de la classe et l'ID de l'action en un seul entier décimal.
+3. **Le Mapping Dynamique** : Il compile un dictionnaire TypeScript (`OoxmlActionDictionary`) injecté au moment du build. Ainsi, lorsque le pont intercepte un ID mystérieux (ex: `1835009`), le dictionnaire l'associe instantanément à sa chaîne canonique (ex: `"ParaRun_AddItem"`), permettant au pont de traiter 100% du spectre applicatif OOXML avec un seul algorithme générique d'assignation de propriété.
+
+### 7.4 Gestion du Undo / Redo (Time-Travel Local)
 Un défi majeur de la co-édition Temps Réel est la fonction "Annuler" (Ctrl+Z). Si Alice et Bob tapent dans le même paragraphe, et qu'Alice fait Ctrl+Z, le moteur natif d'ONLYOFFICE (pensé pour être centralisé) risque d'effacer les caractères que Bob vient de taper.
 Pour résoudre cela, **nous désactivons le gestionnaire d'historique natif d'ONLYOFFICE**.
 À la place, nous interceptons les événements clavier Ctrl+Z / Ctrl+Y (ou les clics sur les boutons de la barre d'outils) et nous les redirigeons vers l'API **Time-Travel de Loro** (`loro.undo()` / `loro.redo()`).
