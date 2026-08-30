@@ -351,3 +351,134 @@ Pour que cette magie opère, **les clients doivent obligatoirement partager le m
 Si Alice (dans l'avion) et Charlie (sur terre) prennent tous les deux un document `.docx` vierge et l'injectent **indépendamment** dans Loro (via le processus de *Seeding* décrit à la Limite 5), les moteurs vont générer des `InternalId` différents.
 À l'atterrissage, Loro considèrera qu'il s'agit de deux documents totalement distincts et refusera de les fusionner.
 *   **La Règle d'Or** : La résilience P2P fonctionne parfaitement à la condition stricte que le document ait été synchronisé au moins une fois (via son fichier caché `.loro` par exemple) avant la partition réseau, afin que tout le monde partage le même arbre d'identifiants.
+
+---
+
+## 12. Intégration Seafile et Sauvegarde (Le Callback)
+
+L'intégration standard entre Seafile et ONLYOFFICE (via WOPI ou API native) repose entièrement sur l'existence d'un Document Server centralisé. 
+Dans le fonctionnement classique :
+1. Seafile donne l'URL du document au Document Server.
+2. Le serveur héberge la session collaborative.
+3. Quand tous les utilisateurs ont fermé leur onglet, le Document Server regénère le fichier `.docx` final et l'envoie à Seafile via une requête HTTP POST (callback) pour créer une nouvelle version du fichier.
+
+### Le Changement de Paradigme avec Loro
+Notre architecture **supprime purement et simplement le Document Server**, le remplaçant par un routeur Rust ultra-léger (qui ne fait que relayer des octets sans rien comprendre au format `.docx`). Le routeur ne peut donc pas générer le fichier de sauvegarde.
+
+### La Solution (Le Client-Side Callback)
+Puisque le serveur a disparu, la responsabilité de la sauvegarde bascule côté client (le navigateur ou le client Desktop) :
+1. **Rendu Local** : Le client possède déjà le document complet affiché dans son Canvas ONLYOFFICE.
+2. **Export Natif** : Le moteur `sdkjs` (exécuté dans le navigateur) possède nativement la logique binaire pour exporter un fichier `.docx` valide depuis son état en mémoire.
+3. **Le Push vers Seafile** : C'est notre pont (l'application locale) qui, lorsqu'un utilisateur clique sur "Sauvegarder" (ou lorsque le dernier client quitte la session), demande à `sdkjs` de compiler le `.docx` et envoie directement ce fichier par un appel API HTTP POST (ou via le client de synchronisation Seafile Desktop) vers les serveurs de stockage.
+
+**Avantage** : Cette décentralisation complète soulage l'infrastructure serveur, car la coûteuse compression/génération du fichier `.docx` est désormais calculée par les processeurs des utilisateurs (en Edge Computing) plutôt que par un cluster centralisé.
+
+---
+
+## 13. Gestion des Auteurs et de l'Historique (Track Changes)
+
+L'IHM d'ONLYOFFICE gère nativement l'affichage des curseurs colorés avec les prénoms des collaborateurs et le mode "Suivi des modifications". Il est crucial que notre pont transmette ces informations.
+
+*   **Le CRDT (La source de vérité)** : Loro signe cryptographiquement chaque micro-delta (chaque lettre tapée) avec le `peer_id` (l'identifiant unique) du client Loro. L'historique est mathématiquement parfait.
+*   **ONLYOFFICE (L'affichage)** : Au démarrage de l'éditeur, `sdkjs` reçoit une configuration d'initialisation contenant un dictionnaire des utilisateurs (ex: `{ "user_1": "Alice" }`).
+*   **Le Rôle du Pont (Injector)** : 
+    1. Lorsqu'un utilisateur distant (Bob) modifie le texte, notre routeur relaie son Delta Loro.
+    2. Le moteur Loro d'Alice intègre la modification et identifie qu'elle provient du `peer_id` de Bob.
+    3. Notre `LoroDocumentAdapter` reconstruit le faux `arrayChanges` pour l'écran d'Alice. Lors de cette reconstruction, **il injecte le `UserId` de Bob dans la structure JSON**.
+    4. ONLYOFFICE ingère cet `arrayChanges`, voit qu'il appartient à Bob, et anime instantanément le curseur rouge de Bob à l'écran, tout en enregistrant la modification sous son nom dans l'historique des révisions.
+
+C'est une mécanique purement *Plug & Play* : Loro assure la rigueur mathématique, et le pont traduit l'auteur pour satisfaire l'IHM officielle.
+
+---
+
+## 14. Sécurité, Authentification et SSO (OpenID Connect)
+
+Dans un environnement Seafile branché sur un SSO (OpenID Connect / Keycloak), il est impératif de garantir que seuls les utilisateurs légitimes peuvent s'abonner au flux Loro d'un document.
+
+Bien que le Routeur Rust soit "stupide" (il ne lit pas les documents), il doit agir comme un vigile intraitable :
+1. **L'Authentification Seafile (SSO)** : L'utilisateur se connecte à Seafile via le SSO de l'entreprise. Seafile vérifie ses droits d'accès sur le fichier `.docx`.
+2. **Le Jeton de Session (JWT)** : Si l'accès est autorisé, l'API de Seafile génère un jeton temporaire signé cryptographiquement (JWT) contenant le `FileId`, le `UserId` et les permissions (Lecture/Écriture). Seafile passe ce jeton au navigateur de l'utilisateur.
+3. **Le Handshake WebSocket** : Le client ONLYOFFICE tente de se connecter au Routeur Rust pour rejoindre la salle : `wss://router.eurooffice.com/room_xyz?token=eyJhbG...`
+4. **La Validation par le Routeur** : Le Routeur Rust lit le jeton. Il possède la clé publique de Seafile (ou un secret partagé) qui lui permet de vérifier la validité et l'expiration du jeton *sans avoir à interroger Seafile*. Si le jeton est valide, la connexion WebSocket est acceptée. Sinon, la connexion est coupée instantanément (`HTTP 401 Unauthorized`).
+
+**Chiffrement de Bout-en-Bout / E2EE** :
+Étant donné que le Routeur Rust ne fait que relayer des flux binaires Loro, cette architecture permet d'implémenter nativement le **Chiffrement de Bout-en-Bout**. 
+Seafile peut transmettre une clé AES de déchiffrement directement aux navigateurs via le chargement de la page. Les clients chiffrent leurs Deltas Loro avant de les envoyer sur le WebSocket. Ainsi, le Routeur Rust (qui n'a pas la clé AES) relaie un trafic totalement opaque. Même en cas de piratage du Routeur, aucun document ne fuiterait.
+
+### Le défi du Desktop Editor (Double-clic sur un fichier Seafile Drive)
+Vous avez mis le doigt sur le point le plus technique : si l'utilisateur ouvre le document depuis son navigateur web, ONLYOFFICE connaît l'ID Seafile invariant du document (`file_id`). Mais s'il double-clique sur le fichier `.docx` dans son explorateur Windows/Mac, l'application s'ouvre "à froid". Elle ne voit qu'un chemin local (ex: `C:\Users\Bob\Seafile\projet\doc.docx`).
+**Comment trouver l'identifiant Seafile (Room ID) et authentifier le flux ?**
+Bien que la fonction native "Connecter au Cloud" d'ONLYOFFICE permette de s'authentifier, elle ne résout pas la traduction du chemin local en `file_id` Seafile lors d'un double-clic. Nous devons donc utiliser une approche hybride :
+1. **Dialogue avec le démon local (SeaDrive API)** : Le client de synchronisation Seafile Drive tourne en tâche de fond et possède une API locale (sur `127.0.0.1` ou via un *Named Pipe*). Au démarrage, notre pont (injecté dans le Desktop Editor) envoie le chemin du fichier (`C:\...\doc.docx`) à cette API locale. 
+2. **Récupération des métadonnées** : Le démon SeaDrive répond à notre pont en lui fournissant le `file_id` invariant du document sur le serveur, ainsi qu'un jeton JWT valide (issu de la session SSO de SeaDrive).
+3. **Ouverture du WebSocket** : Fort de ce `file_id` (qui devient le Room ID) et de ce jeton JWT, le Desktop Editor peut ouvrir sa connexion `wss://router.eurooffice.com/room/{file_id}?token={jwt}` de manière totalement transparente. Le routeur Rust connectera ainsi Bob (Desktop) et Alice (Web) dans la même salle de collaboration.
+
+### Le scénario du "Custom URI Scheme" (Ouvrir dans l'app de bureau depuis le Web)
+Un troisième cas d'usage très courant existe : Dave n'a pas SeaDrive installé. Il est sur l'interface web de Seafile et clique sur le bouton **"Ouvrir sur l'application de bureau"**.
+Dans ce cas, c'est beaucoup plus simple que le double-clic de Bob !
+1. Seafile génère un lien profond (Deep Link) appelé **Custom URI Scheme** (ex: `onlyoffice://api/open?url=https://seafile.../doc.docx&file_id=XYZ-123&token=JWT`).
+2. Le navigateur web de Dave passe ce lien au système d'exploitation, qui lance *ONLYOFFICE Desktop Editor*.
+3. ONLYOFFICE Desktop lit l'URL. Comme l'URL contient *déjà* le `file_id` et le `token` JWT générés par Seafile Web, le Desktop Editor n'a **pas besoin** de SeaDrive. Il possède toutes les clés en main pour se connecter directement au Routeur Rust, exactement comme s'il était un client Web !
+
+```mermaid
+sequenceDiagram
+    box Réseau Local (Clients)
+    participant Alice as Alice (Navigateur Web)
+    participant Dave as Dave (Desktop via Web UI)
+    participant Bob as Bob (Desktop via Double-clic OS)
+    participant SeaDrive as Démon SeaDrive local
+    end
+    box Internet
+    participant Seafile as Serveur Seafile (SSO)
+    participant Router as Routeur Rust
+    end
+
+    %% Scénario Alice (Web)
+    Alice->>Seafile: 1. Ouvre doc.docx sur le web
+    Seafile-->>Alice: file_id + JWT
+    Alice->>Router: wss://.../room/XYZ-123
+
+    %% Scénario Dave (Desktop depuis le Web)
+    Dave->>Seafile: 2. Clique "Ouvrir dans l'app de bureau"
+    Seafile-->>Dave: Lien: onlyoffice://...&file_id=XYZ&token=JWT
+    Dave->>Router: wss://.../room/XYZ-123 (Sans SeaDrive !)
+
+    %% Scénario Bob (Desktop depuis fichier local)
+    Bob->>Bob: 3. Double-clique sur C:\...\doc.docx
+    Bob->>SeaDrive: Demande API Locale: Quel est cet ID ?
+    SeaDrive-->>Bob: Retourne file_id + JWT (SSO local)
+    Bob->>Router: wss://.../room/XYZ-123
+    
+    Note over Alice, Bob: Les 3 utilisateurs collaborent dans le même CRDT Loro !
+```
+
+---
+
+## 15. Commentaires, Mentions (@) et Notifications Externes
+
+La gestion des commentaires et de l'intelligence sociale (mentions avec "@") est une fonctionnalité clé d'ONLYOFFICE. Heureusement, le moteur natif prévoit explicitement des points d'accroche (hooks) pour s'interfacer avec un système externe comme Seafile.
+
+### 1. La Synchronisation P2P du Commentaire (Loro)
+Dans le modèle de données de `sdkjs`, un commentaire est simplement un objet (généralement rattaché à une zone de texte via un identifiant).
+Lorsque Dave ajoute un commentaire, ONLYOFFICE génère une mutation `arrayChanges` qui ordonne l'ajout de cet objet "Commentaire". 
+Notre pont interceptant *toutes* les mutations de manière générique, **le commentaire sera naturellement synchronisé vers Loro** et relayé à tous les pairs, exactement comme si c'était une mise en gras. Aucune logique spécifique n'est requise dans Loro pour les commentaires, ils bénéficient du même traitement miroir que le texte.
+
+### 2. Le Hook d'Autocomplétion (Les Mentions)
+Pour qu'une liste déroulante s'affiche lorsque l'utilisateur tape `@` dans la boîte de commentaire, ONLYOFFICE propose un événement d'interface publique : `onRequestUsers`.
+*   **Fonctionnement** : Dans le code d'initialisation de l'éditeur (souvent côté iframe/API), on déclare le hook `config.events.onRequestUsers`.
+*   **Action** : Dès que l'utilisateur tape `@`, ce hook est appelé. Notre pont exécutera alors un appel API vers Seafile pour récupérer la liste des collaborateurs (avec leur ID et leur nom).
+*   **Affichage** : ONLYOFFICE affiche nativement la liste. L'utilisateur en sélectionne un, et l'éditeur insère une balise mention officielle dans le commentaire.
+
+### 3. Le Hook de Notification Externe (Envoi d'email / Hub Central du SI)
+Une fois le commentaire avec mention validé (bouton "Répondre" ou "Ajouter"), il faut alerter l'utilisateur mentionné.
+*   **L'événement** : ONLYOFFICE déclenche le hook natif `config.events.onRequestSendNotify`.
+*   **La Charge Utile (Payload)** : L'événement nous transmet un objet contenant :
+    - Le `message` (le texte du commentaire).
+    - La liste `actionLink` (pour créer un lien direct vers le fichier).
+    - La liste des `userIds` des personnes mentionnées.
+*   **L'Action du Pont (Agnostique)** : Notre pont intercepte cet événement et effectue immédiatement une requête HTTP POST (un Webhook). Ce Webhook n'est pas limité à Seafile ! L'architecture étant agnostique, ce payload peut être envoyé :
+    - Soit à Seafile pour déclencher sa cloche interne.
+    - Soit (ou en plus) à un **Hub Central de Notifications du Système d'Information (SI)** (ex: bus de messages RabbitMQ, composant central d'entreprise, webhook Microsoft Teams/Slack, etc.).
+    Cela permet à l'entreprise de centraliser 100% des notifications de ses applications.
+
+**Résumé** : Le CRDT Loro se charge de propager l'existence visuelle et textuelle du commentaire à tout le monde en temps réel, tandis que l'IHM ONLYOFFICE s'interface très facilement avec n'importe quel Hub de notifications externe de votre SI grâce à ses hooks `onRequestUsers` et `onRequestSendNotify`.
