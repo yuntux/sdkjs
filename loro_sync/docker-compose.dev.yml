@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  dev-env:
+    build: 
+      context: .
+      dockerfile: Dockerfile.dev
+    volumes:
+      # On monte tout le repo sdkjs dans /workspace
+      - ../:/workspace
+    working_dir: /workspace/loro_sync
+    ports:
+      # Port pour le serveur de développement web (Vite/Webpack)
+      - "3000:3000"
+      # Port pour le serveur relais Rust
+      - "8080:8080"
+    environment:
+      - NODE_ENV=development

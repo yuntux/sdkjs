@@ -1,0 +1,18 @@
+{
+  "name": "eurooffice-loro-sync",
+  "version": "1.0.0",
+  "description": "Binding CRDT Loro pour le moteur sdkjs d'EuroOffice",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "loro-crdt": "^0.16.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.5",
+    "vitest": "^1.6.0"
+  }
+}

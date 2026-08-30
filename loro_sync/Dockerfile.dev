@@ -1,0 +1,17 @@
+# Environnement de Dev pour EuroOffice Loro Sync
+
+FROM mcr.microsoft.com/devcontainers/javascript-node:20
+
+# Installation de la toolchain Rust
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/root/.cargo/bin:${PATH}"
+
+# Installation des outils WASM
+RUN rustup target add wasm32-unknown-unknown
+RUN curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh
+RUN cargo install wasm-bindgen-cli
+
+WORKDIR /workspace/loro_sync
+
+# On garde le conteneur en vie
+CMD ["sleep", "infinity"]
