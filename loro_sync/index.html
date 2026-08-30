@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <title>Loro-ONLYOFFICE POC</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #f4f5f7; margin: 0; padding: 20px; }
+        .header { display: flex; justify-content: space-between; align-items: center; background: white; padding: 15px 20px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); margin-bottom: 20px; }
+        h1 { margin: 0; font-size: 20px; color: #333; }
+        .status { padding: 6px 12px; background: #e3fcef; color: #006644; border-radius: 20px; font-weight: bold; font-size: 14px; }
+    </style>
+    <!-- Stub global pour simuler l'existence de sdkjs avant l'injection -->
+    <!-- En production, on chargerait ici /sdkjs/word/sdk-all.js -->
+    <script>
+        window.AscCommon = { 
+            CDocsCoApi: function() {} 
+        };
+    </script>
+</head>
+<body>
+    <div class="header">
+        <h1>Éditeur ONLYOFFICE P2P (Loro CRDT Bridge)</h1>
+        <div class="status">● CRDT Actif</div>
+    </div>
+    
+    <div id="editor-container" style="width: 100%; height: 80vh; background: white; border: 1px solid #ddd; border-radius: 8px; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.05);">
+        <!-- L'iframe d'ONLYOFFICE sera instancié ici -->
+        <div style="display: flex; align-items: center; justify-content: center; height: 100%; color: #888;">
+            (Iframe ONLYOFFICE en attente de chargement sdkjs...)
+        </div>
+    </div>
+
+    <!-- 1. Chargement de notre architecture Loro-Sync (Vite point d'entrée) -->
+    <script type="module">
+        import { injectLoroSync } from './src/Injector.ts';
+        import { LoroDocumentAdapter } from './src/LoroDocumentAdapter.ts';
+        import { ArrayChangesMapper } from './src/ArrayChangesMapper.ts';
+        import { LoroSyncManager } from './src/LoroSyncManager.ts';
+
+        console.log("🔌 Initialisation de la pile Loro-ONLYOFFICE...");
+
+        // 2. Instanciation des composants cœurs
+        const adapter = new LoroDocumentAdapter();
+        const mapper = new ArrayChangesMapper(adapter);
+        const syncManager = new LoroSyncManager(adapter.getDoc());
+
+        // 3. Exposition globale pour permettre à l'Injecteur (Injector.ts) d'y accéder
+        window.LoroBridgeMapper = mapper;
+        window.LoroSyncManagerInstance = syncManager;
+
+        // 4. Connexion au relais Rust local (Phase 4)
+        syncManager.connectToRelay('ws://localhost:3000/room/crdt_test_1', 'fake_jwt');
+
+        // 5. Coupure du réseau officiel et branchement de notre pont CRDT
+        injectLoroSync();
+
+        console.log("🚀 Moteur prêt ! Vous pouvez initialiser 'new DocsAPI.DocEditor()'.");
+    </script>
+</body>
+</html>

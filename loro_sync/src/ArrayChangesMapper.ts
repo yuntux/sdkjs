@@ -102,8 +102,58 @@ export class ArrayChangesMapper {
                 }
                 break;
 
+            case 30: // 📊 Création de Tableau
+                if (change.Id && change.Rows && change.Cols) {
+                    const tableMap = this.adapter.registerNode(change.Id, "Table");
+                    tableMap.set("rows", change.Rows);
+                    tableMap.set("cols", change.Cols);
+                    if (change.ParentId) {
+                        try { this.domTree.createNode(change.ParentId); } catch(e){}
+                    }
+                }
+                break;
+
+            case 31: // ➖ Ajout de ligne (Row)
+                if (change.Id && change.TableId) {
+                    this.adapter.registerNode(change.Id, "TableRow");
+                }
+                break;
+
+            case 32: // 🔲 Ajout de cellule (Cell)
+                if (change.Id && change.RowId) {
+                    this.adapter.registerNode(change.Id, "TableCell");
+                }
+                break;
+
+            case 40: // 🔢 Listes et Numérotations (Numbering)
+                if (change.Id && change.Level !== undefined) {
+                    this.adapter.setNodeProperty(change.Id, "ListLevel", change.Level);
+                    this.adapter.setNodeProperty(change.Id, "ListType", change.ListType || "Bullet");
+                }
+                break;
+
+            case 80: // 📊 [EXCEL] Modification d'une cellule (Spreadsheet)
+                if (change.Id && change.Value !== undefined) {
+                    this.adapter.setNodeProperty(change.Id, "CellValue", change.Value);
+                    if (change.Formula) {
+                        this.adapter.setNodeProperty(change.Id, "Formula", change.Formula);
+                    }
+                }
+                break;
+
+            case 90: // 📽️ [POWERPOINT] Insertion d'une diapositive (Slide)
+                if (change.Id && change.SlideIndex !== undefined) {
+                    const slideMap = this.adapter.registerNode(change.Id, "Slide");
+                    slideMap.set("index", change.SlideIndex);
+                    // Raccordement à l'arbre des slides
+                    if (change.ParentId) {
+                        try { this.domTree.createNode(change.ParentId); } catch(e){}
+                    }
+                }
+                break;
+
             default:
-                // Ignorer silencieusement pour le moment les types non cartographiés
+                // Ignorer silencieusement pour le moment les types non cartographiés (Phase 3.5)
                 break;
         }
     }

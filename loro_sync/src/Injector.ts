@@ -37,6 +37,10 @@ export function injectLoroSync() {
 
         this.askSaveChanges = function(callback) {
             console.log("Intercepté askSaveChanges()");
+            if ((window as any).LoroSyncManagerInstance) {
+                // Remplacer "URL_CALLBACK" et "TOKEN" par l'injection de Seafile au boot
+                (window as any).LoroSyncManagerInstance.saveToSeafile("URL_CALLBACK", "TOKEN");
+            }
             if (callback) callback();
         };
 
@@ -50,11 +54,16 @@ export function injectLoroSync() {
         
         this.sendCoAuthMessage = function(message) {
             console.log("Intercepté sendCoAuthMessage (Awareness, Verrous):", message);
+            if ((window as any).LoroSyncManagerInstance && message.type === 'lock') {
+                (window as any).LoroSyncManagerInstance.acquireSoftLock(message.id);
+            }
         };
         
         // --- Méthodes d'Awareness (Curseurs et Sélections) ---
         this.SendMouse = function(x, y) {
-            // Sera mappé sur le canal Awareness (non-persistant) de Loro
+            if ((window as any).LoroSyncManagerInstance) {
+                (window as any).LoroSyncManagerInstance.sendCursor(x, y);
+            }
         };
         
         this.SendSelection = function(selectionData) {

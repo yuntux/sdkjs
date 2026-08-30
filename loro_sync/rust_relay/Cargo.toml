@@ -1,0 +1,12 @@
+[package]
+name = "rust_relay"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+axum = "0.6"
+tokio = { version = "1", features = ["full"] }
+dashmap = "5.5"
+serde = { version = "1.0", features = ["derive"] }
+jsonwebtoken = "9.3"
+sha2 = "0.10"

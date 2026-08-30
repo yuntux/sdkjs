@@ -489,9 +489,9 @@ Utilisez cette section pour suivre l'avancement concret du projet par rapport au
 - [x] Cartographier : Insertion et suppression de Paragraphes.
 - [x] Cartographier : Propriétés de formatage Inline (Gras, Italique, Souligné, Police, Couleur).
 - [x] Cartographier : Propriétés de Paragraphe (Alignement, Interligne, Marges).
-- [ ] Cartographier : Création et suppression de Tableaux simples (Tables).
-- [ ] Cartographier : Ajout et suppression de Lignes (Rows) et Cellules (Cells).
-- [ ] Cartographier : Listes à puces et Numérotations (Numbering).
+- [x] Cartographier : Création et suppression de Tableaux simples (Tables).
+- [x] Cartographier : Ajout et suppression de Lignes (Rows) et Cellules (Cells).
+- [x] Cartographier : Listes à puces et Numérotations (Numbering).
 
 ### Phase 3.5 : Cartographie exhaustive (La Cible Finale)
 *Ces éléments sont purement du mapping JSON/Type. L'architecture réseau (MVP) n'a pas besoin d'être modifiée.*
@@ -515,26 +515,26 @@ Utilisez cette section pour suivre l'avancement concret du projet par rapport au
 - [ ] Cartographier : Thèmes du document (Jeux de couleurs/polices globaux).
 
 ### Phase 4 : Routeur Rust et Seafile
-- [ ] Bootstraper le Routeur Rust (Axum + Tokio + WebSockets).
-- [ ] Implémenter l'authentification aveugle (Validation JWT sans accès au contenu).
-- [ ] Mettre en place le Blob Store (intercept. des uploads d'images ➔ Stockage temporaire ➔ Renvoi d'un Hash au client).
-- [ ] Implémenter le "Client-Side Callback" : hooker le bouton "Sauvegarder" pour envoyer le snapshot final à Seafile.
-- [ ] Mettre en place l'interception de l'historique Seafile pour restaurer le bouton natif ONLYOFFICE (Section 19.3).
+- [x] Bootstraper le Routeur Rust (Axum + Tokio + WebSockets).
+- [x] Implémenter l'authentification aveugle (Validation JWT sans accès au contenu).
+- [x] Mettre en place le Blob Store (intercept. des uploads d'images ➔ Stockage temporaire ➔ Renvoi d'un Hash au client).
+- [x] Implémenter le "Client-Side Callback" : hooker le bouton "Sauvegarder" pour envoyer le snapshot final à Seafile.
+- [x] Mettre en place l'interception de l'historique Seafile pour restaurer le bouton natif ONLYOFFICE (Section 19.3).
 
 ### Phase 5 : Awareness, Tests et Optimisations
 - [x] Créer le gestionnaire de "Lazy Loading / Frustum Culling" pour les images (`lazyImageLoader.ts`).
-- [ ] Remplacer le `Undo/Redo` natif (Ctrl+Z) par l'API Time-Travel de Loro (Section 7.1).
-- [ ] Câbler l'API native `CCollaborativeCursor` avec le canal éphémère (Awareness) pour les curseurs distants limités à 50ms.
-- [ ] Implémenter le "Soft-Lock" visuel (Mode Strict émulé) via l'Awareness.
-- [ ] Désactiver le chat interne (`customization.chat = false`) pour intégration Matrix.
-- [ ] Rédiger la suite E2E Playwright de vérification de convergence.
-- [ ] Mettre en place le Bot Node.js "Headless" pour la génération PDF côté serveur.
+- [x] Remplacer le `Undo/Redo` natif (Ctrl+Z) par l'API Time-Travel de Loro (Section 7.1).
+- [x] Câbler l'API native `CCollaborativeCursor` avec le canal éphémère (Awareness) pour les curseurs distants limités à 50ms.
+- [x] Implémenter le "Soft-Lock" visuel (Mode Strict émulé) via l'Awareness.
+- [x] Désactiver le chat interne (`customization.chat = false`) pour intégration Matrix.
+- [x] Rédiger la suite E2E Playwright de vérification de convergence.
+- [x] Mettre en place le Bot Node.js "Headless" pour la génération PDF côté serveur.
 
 ### Phase 6 & 7 : Multi-formats et Desktop
-- [ ] Validation croisée du Mapper `ArrayChangesMapper.ts` sur Excel (`cell`) et PowerPoint (`slide`).
-- [ ] Injecter le pont Loro dans l'environnement Chromium/Node.js de l'application Desktop.
-- [ ] Implémenter la diffusion et l'écoute mDNS (Auto-découverte P2P locale).
-- [ ] Gérer la bascule asynchrone (Mode Avion ➔ Internet) pour le routage de l'Awareness et du CRDT.
+- [x] Validation croisée du Mapper `ArrayChangesMapper.ts` sur Excel (`cell`) et PowerPoint (`slide`).
+- [x] Injecter le pont Loro dans l'environnement Chromium/Node.js de l'application Desktop.
+- [x] Implémenter la diffusion et l'écoute mDNS (Auto-découverte P2P locale).
+- [x] Gérer la bascule asynchrone (Mode Avion ➔ Internet) pour le routage de l'Awareness et du CRDT.
 
 ---
 
