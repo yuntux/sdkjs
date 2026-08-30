@@ -482,3 +482,39 @@ Une fois le commentaire avec mention validé (bouton "Répondre" ou "Ajouter"), 
     Cela permet à l'entreprise de centraliser 100% des notifications de ses applications.
 
 **Résumé** : Le CRDT Loro se charge de propager l'existence visuelle et textuelle du commentaire à tout le monde en temps réel, tandis que l'IHM ONLYOFFICE s'interface très facilement avec n'importe quel Hub de notifications externe de votre SI grâce à ses hooks `onRequestUsers` et `onRequestSendNotify`.
+
+---
+
+## 16. Impact sur le Cœur d'ONLYOFFICE (Maintenabilité)
+
+Face à l'ajout de toutes ces fonctionnalités "haut niveau" (Sauvegarde Client-Side, Noms des auteurs, Authentification SSO Desktop, Mentions, et Webhooks de notification décrites dans les chapitres 12 à 15), la question de la maintenabilité et de l'intégrité du logiciel se pose : **Allons-nous dénaturer ONLYOFFICE ?**
+
+La réponse est **NON, absolument pas.** 
+La grande force de cette architecture est qu'elle nécessite **zéro modification** dans le code source profond d'ONLYOFFICE (`sdkjs`, le code WASM, ou le moteur OT). 
+
+Voici pourquoi couche par couche :
+*   **Chapitre 12 (Sauvegarde)** : L'export du fichier exploite la méthode publique officielle de `sdkjs` (ex: `downloadAs`). Notre pont ne fait qu'appeler cette fonction documentée.
+*   **Chapitre 13 (Historique des Auteurs)** : L'attribution des couleurs et des noms se fait via l'objet de configuration standard (`config.document.info`) passé à l'initialisation de l'iframe. C'est la norme officielle d'ONLYOFFICE.
+*   **Chapitre 14 (Sécurité SSO/Réseau)** : L'éditeur ONLYOFFICE ignore totalement comment fonctionne le réseau. La vérification du JWT et la création du WebSocket se font exclusivement dans **notre script de Pont Javascript (LoroDocumentAdapter)**, avant même que les données n'entrent dans ONLYOFFICE. L'éditeur reste parfaitement étanche.
+*   **Chapitre 15 (Commentaires & Notifications)** : Les événements `onRequestUsers` et `onRequestSendNotify` ne sont pas des piratages. Ce sont des **points d'accroche (hooks) officiels et documentés** par Ascensio System (l'éditeur d'ONLYOFFICE), conçus précisément pour que des développeurs puissent s'y greffer sans modifier le code source.
+
+**En conclusion :**
+L'outil n'est jamais dénaturé. Nous utilisons l'éditeur ONLYOFFICE exactement comme il a été conçu pour être utilisé : comme un composant d'interface (Vue) qui est piloté de l'extérieur par des configurations et des APIs publiques. Cela garantit que lors des futures mises à jour d'ONLYOFFICE, nos intégrations SSO et sociales continueront de fonctionner sans nécessiter de maintenance lourde.
+
+---
+
+## 17. Compatibilité Multi-Formats (Word, Excel, PowerPoint)
+
+Il est crucial de souligner que toute cette machinerie (le pont Loro, l'intercepteur `arrayChanges`, la séparation RAM/Réseau avec `FromJSON`) n'est **pas du tout limitée à Word (`.docx`)**.
+
+L'architecture interne d'ONLYOFFICE (`sdkjs`) a été pensée de manière unifiée pour ses trois éditeurs :
+*   `sdkjs/word/` (Documents)
+*   `sdkjs/cell/` (Tableurs Excel)
+*   `sdkjs/slide/` (Présentations PowerPoint)
+
+**Pourquoi notre architecture fonctionne-t-elle pour les trois ?**
+1. **L'Agnosticisme du Registre Plat** : Notre adaptateur Loro se fiche de savoir s'il synchronise la largeur d'une colonne Excel ou la couleur d'un titre Word. Il voit simplement des clés/valeurs rattachées à un `InternalId`. Les trois éditeurs utilisent exactement le même système universel d'`InternalId`.
+2. **Le Format Universel arrayChanges** : Les ingénieurs d'ONLYOFFICE ont implémenté le système `arrayChanges` (le moteur de collaboration OT) comme une brique noyau commune (Core) aux trois logiciels. Que Bob ajoute une diapositive PowerPoint ou tape du texte dans Excel, la structure du flux réseau capturé par notre Injecteur est la même.
+3. **Le Cold Start Universel** : Les trois éditeurs possèdent chacun leur propre fichier `fromToJSON.js` (`cell/fromToJSON.js`, `slide/fromToJSON.js`). La mécanique de désérialisation rapide depuis le cache Loro s'applique donc de manière rigoureusement identique pour Excel et PowerPoint.
+
+Notre pont CRDT est donc par essence **agnostique au format de fichier**. Il synchronise des objets DOM virtuels, faisant de cette architecture une solution universelle pour toute la suite bureautique.
