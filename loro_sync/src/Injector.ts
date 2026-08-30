@@ -42,17 +42,31 @@ export function injectLoroSync() {
 
         this.saveChanges = function(arrayChanges, deleteIndex, excelAdditionalInfo) {
             console.log("🚀 INTERCEPTION DES CHANGEMENTS LOCAUX :", arrayChanges);
-            // C'est ICI que nous traduirons les 'arrayChanges' d'ONLYOFFICE (OT)
-            // en opérations Loro (CRDT) avant de les diffuser en P2P !
+            // Routage vers le dictionnaire Loro CRDT
+            if ((window as any).LoroBridgeMapper) {
+                (window as any).LoroBridgeMapper.applyLocalChangesToLoro(arrayChanges);
+            }
         };
         
         this.sendCoAuthMessage = function(message) {
-            console.log("Intercepté sendCoAuthMessage:", message);
+            console.log("Intercepté sendCoAuthMessage (Awareness, Verrous):", message);
         };
         
-        // Stub de toutes les autres méthodes pour éviter les crashs
+        // --- Méthodes d'Awareness (Curseurs et Sélections) ---
+        this.SendMouse = function(x, y) {
+            // Sera mappé sur le canal Awareness (non-persistant) de Loro
+        };
+        
+        this.SendSelection = function(selectionData) {
+            // Sera mappé sur le canal Awareness pour voir ce que l'autre surligne
+        };
+
+        // --- Le flux Retour (Réseau -> Local) ---
+        // Attention : La réception ne se fait pas via une surcharge de méthode sortante,
+        // mais en appelant manuellement this.Editor.ApplyChanges() quand Loro émet un event.
+        
+        // Stub de toutes les autres méthodes pour éviter les crashs de l'interface
         this.CheckConnection = function() { return true; };
-        this.SendMouse = function() {};
         this.Destroy = function() {};
     };
 

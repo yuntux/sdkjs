@@ -477,18 +477,18 @@ Utilisez cette section pour suivre l'avancement concret du projet par rapport au
 - [x] Définir la structure du Registre Plat (`LoroDocumentAdapter`).
 
 ### Phase 3 : Le Pont "Passe-Plat" et le Cold Start (Le MVP)
-- [ ] Créer la coquille vide de `ArrayChangesMapper.ts`.
-- [ ] Implémenter le hook de capture locale : router le flux `arrayChanges` vers le Mapper.
-- [ ] Implémenter le "Mutation Guard" (verrou anti-écho) pour bloquer les boucles de synchronisation.
-- [ ] Implémenter la structure arborescente avec `LoroTree` (remplace les LoroList).
-- [ ] Créer le tampon heuristique (debounce) pour convertir les Delete+Insert en `LoroTree.move()`.
-- [ ] Rédiger le code de désérialisation rapide (Cold Start : Loro ➔ JSON ➔ `FromJSON`).
+- [x] Créer la coquille vide de `ArrayChangesMapper.ts`.
+- [x] Implémenter le hook de capture locale : router le flux `arrayChanges` vers le Mapper.
+- [x] Implémenter le "Mutation Guard" (verrou anti-écho) pour bloquer les boucles de synchronisation.
+- [x] Implémenter la structure arborescente avec `LoroTree` (remplace les LoroList).
+- [x] Créer le tampon heuristique (debounce) pour convertir les Delete+Insert en `LoroTree.move()`.
+- [x] Rédiger le code de désérialisation rapide (Cold Start : Loro ➔ JSON ➔ `FromJSON`).
 
 **Cartographie des 15 codes vitaux (Le MVP) :**
-- [ ] Cartographier : Insertion et suppression de caractères (Text Runs).
-- [ ] Cartographier : Insertion et suppression de Paragraphes.
-- [ ] Cartographier : Propriétés de formatage Inline (Gras, Italique, Souligné, Police, Couleur).
-- [ ] Cartographier : Propriétés de Paragraphe (Alignement, Interligne, Marges).
+- [x] Cartographier : Insertion et suppression de caractères (Text Runs).
+- [x] Cartographier : Insertion et suppression de Paragraphes.
+- [x] Cartographier : Propriétés de formatage Inline (Gras, Italique, Souligné, Police, Couleur).
+- [x] Cartographier : Propriétés de Paragraphe (Alignement, Interligne, Marges).
 - [ ] Cartographier : Création et suppression de Tableaux simples (Tables).
 - [ ] Cartographier : Ajout et suppression de Lignes (Rows) et Cellules (Cells).
 - [ ] Cartographier : Listes à puces et Numérotations (Numbering).

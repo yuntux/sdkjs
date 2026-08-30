@@ -1,30 +1,33 @@
-import { Loro, LoroList, LoroMap, LoroText } from "loro-crdt";
+import { Loro, LoroList, LoroMap, LoroText, LoroTree, LoroTreeNode } from "loro-crdt";
 
 /**
- * LoroDocumentAdapter - Approche "Industrielle" (Flat Node Registry)
+ * LoroDocumentAdapter - L'Adaptateur Universel avec LoroTree
  * 
- * Au lieu de modéliser manuellement chaque type de bloc OOXML (Paragraphe, Table, Run),
- * nous créons un miroir générique du DOM d'ONLYOFFICE basé sur les InternalIds uniques.
+ * Maintient le registre plat des propriétés et l'arborescence (LoroTree).
+ * Génère également le JSON pour le Cold Start (Démarrage à froid).
  */
 export class LoroDocumentAdapter {
     private doc: Loro;
-    // Registre plat contenant tous les nœuds du document
-    // Clé: InternalId (généré par sdkjs) -> Valeur: LoroMap modélisant l'élément
-    private nodes: LoroMap;
+    private nodes: LoroMap; // Registre plat des propriétés (InternalId -> LoroMap)
+    private domTree: LoroTree; // Hiérarchie structurelle du document
     
-    // Nœud racine du document (ex: le body principal)
     private rootId: string = "root";
 
     constructor(existingDoc?: Loro) {
         this.doc = existingDoc || new Loro();
         this.nodes = this.doc.getMap("nodes");
+        this.domTree = this.doc.getTree("dom");
         
-        // Initialisation de la racine si c'est un nouveau document
         if (!this.nodes.has(this.rootId)) {
+            // Création de la racine du registre
             const rootNode = new LoroMap();
             rootNode.set("type", "document_body");
-            rootNode.setContainer("children", new LoroList());
+            rootNode.setContainer("props", new LoroMap());
             this.nodes.setContainer(this.rootId, rootNode);
+            
+            // Création du nœud racine dans l'arbre (le parent de tout)
+            // LoroTree génère ses propres IDs, nous gérons la correspondance si besoin.
+            this.doc.commit();
         }
     }
 
@@ -33,22 +36,14 @@ export class LoroDocumentAdapter {
     }
 
     /**
-     * Crée ou met à jour un nœud générique.
-     * @param internalId L'ID unique généré par sdkjs (ex: oParagraph.InternalId)
-     * @param nodeType Le type du nœud (ex: "Paragraph", "Run", "Table")
+     * Crée ou met à jour les propriétés d'un nœud dans le registre plat.
      */
     public registerNode(internalId: string, nodeType: string): LoroMap {
         if (!this.nodes.has(internalId)) {
             const nodeMap = new LoroMap();
             nodeMap.set("type", nodeType);
-            
-            // Propriétés du nœud (formatage, marges, etc.)
             nodeMap.setContainer("props", new LoroMap());
             
-            // Si le nœud peut contenir d'autres nœuds, on lui prépare une liste d'enfants
-            nodeMap.setContainer("children", new LoroList());
-            
-            // S'il s'agit d'un nœud textuel (CRun), on prépare son buffer texte
             if (nodeType === "Run" || nodeType === "Text") {
                 nodeMap.setContainer("text", new LoroText());
             }
@@ -59,15 +54,7 @@ export class LoroDocumentAdapter {
     }
 
     /**
-     * Supprime un nœud du registre.
-     */
-    public unregisterNode(internalId: string): void {
-        this.nodes.delete(internalId);
-    }
-
-    /**
      * Met à jour une propriété (Gras, Italique, Taille...) sur un nœud.
-     * Automatiquement "future-proof" peu importe les nouveautés de sdkjs.
      */
     public setNodeProperty(internalId: string, propKey: string, propValue: any): void {
         const node = this.nodes.get(internalId) as LoroMap;
@@ -77,61 +64,75 @@ export class LoroDocumentAdapter {
         props.set(propKey, propValue);
     }
 
-    /**
-     * Insère un enfant dans l'arborescence.
-     */
-    public insertChild(parentId: string, childId: string, index: number): void {
-        const parent = this.nodes.get(parentId) as LoroMap;
-        if (!parent) return;
-
-        const children = parent.get("children") as LoroList;
-        children.insert(index, childId);
-    }
-
-    /**
-     * Retire un enfant de l'arborescence sans le supprimer du registre.
-     */
-    public removeChild(parentId: string, index: number): void {
-        const parent = this.nodes.get(parentId) as LoroMap;
-        if (!parent) return;
-
-        const children = parent.get("children") as LoroList;
-        children.delete(index, 1);
-    }
-
-    /**
-     * Insère du texte dans un conteneur textuel (ex: CRun).
-     */
     public insertText(internalId: string, offset: number, text: string): void {
         const node = this.nodes.get(internalId) as LoroMap;
         if (!node) return;
-
         const loroText = node.get("text") as LoroText;
-        if (loroText) {
-            loroText.insert(offset, text);
-        }
+        if (loroText) loroText.insert(offset, text);
     }
 
-    /**
-     * Supprime du texte dans un conteneur textuel.
-     */
     public deleteText(internalId: string, offset: number, length: number): void {
         const node = this.nodes.get(internalId) as LoroMap;
         if (!node) return;
-
         const loroText = node.get("text") as LoroText;
-        if (loroText) {
-            loroText.delete(offset, length);
+        if (loroText) loroText.delete(offset, length);
+    }
+
+    // --- COLD START (Démarrage à Froid) ---
+
+    /**
+     * Reconstruit l'objet JSON complet attendu par la méthode native FromJSON d'ONLYOFFICE.
+     * C'est ici que réside "l'effort d'anatomie" (Phase 3.5).
+     */
+    public buildJsonForColdStart(): any {
+        // En théorie, LoroTree retourne ses racines via domTree.roots()
+        const roots = this.domTree.roots();
+        if (roots.length === 0) return {}; // Document vide
+
+        // On démarre la construction récursive depuis la racine
+        return this.buildJsonRecursive(roots[0]);
+    }
+
+    private buildJsonRecursive(treeNode: LoroTreeNode): any {
+        const internalId = treeNode.id as unknown as string; // Identifiant mappé
+        const nodeData = this.nodes.get(internalId) as LoroMap;
+        
+        if (!nodeData) return {};
+
+        const type = nodeData.get("type") as string;
+        const props = (nodeData.get("props") as LoroMap).toJSON();
+        
+        // --- 1. L'Anatomie Générique ---
+        let result: any = {
+            "Type": type, // Type ONLYOFFICE (ex: "Paragraph")
+            "InternalId": internalId,
+            ...props // On injecte toutes les propriétés visuelles interceptées
+        };
+
+        // --- 2. L'Anatomie Spécifique (Le "Mapping") ---
+        
+        // Texte
+        if (type === "Run" || type === "Text") {
+            const loroText = nodeData.get("text") as LoroText;
+            result["Text"] = loroText ? loroText.toString() : "";
         }
+        
+        // Enfants (Récursivité)
+        const children = treeNode.children();
+        if (children.length > 0) {
+            result["Elements"] = [];
+            for (const child of children) {
+                result["Elements"].push(this.buildJsonRecursive(child));
+            }
+        }
+
+        // TODO: Mappings spécifiques (Tableaux, Images, SmartArts...)
+        // Si type === "Table", restructurer result["Elements"] en tr/td
+        
+        return result;
     }
 
-    // --- Méthodes de synchronisation réseau ---
-
-    public exportSnapshot(): Uint8Array {
-        return this.doc.exportSnapshot();
-    }
-
-    public import(data: Uint8Array): void {
-        this.doc.import(data);
-    }
+    // --- Réseau ---
+    public exportSnapshot(): Uint8Array { return this.doc.exportSnapshot(); }
+    public import(data: Uint8Array): void { this.doc.import(data); }
 }

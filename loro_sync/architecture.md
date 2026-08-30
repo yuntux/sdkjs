@@ -162,7 +162,14 @@ Lors de la phase de conception initiale, il avait été envisagé de surcharger 
 2. **Le Volume de Code (1 Hook vs 500 Hooks)** : Intercepter manuellement nécessitait de coder, tester et maintenir des centaines de points d'injection (un par bouton). Avec l'approche actuelle, il y a **un seul point d'injection réseau**. L'extension se limite à un dictionnaire (`switch/case`).
 3. **Le Batching (Atomicité gratuite)** : Si un utilisateur colle un énorme tableau, l'éditeur appelle nativement `CreateCell()` 1000 fois. Surcharger cette méthode aurait généré 1000 messages réseau (risque de saturation). Le moteur `arrayChanges`, lui, attend la fin du *Paste* et émet un seul Delta atomique pré-calculé. Le Diff et le Batching nous sont offerts gratuitement !
 
-### Le Pont "Passe-Plat" (arrayChanges ↔ Loro)
+### 7.1 L'illusion du "Raw Sync" : Pourquoi mapper au lieu de juste transférer ?
+Une question légitime serait : *Puisque Loro synchronise du JSON, pourquoi ne pas simplement mettre le tableau brut `arrayChanges` dans une `LoroList` et le laisser se synchroniser ?*
+Transférer l'historique brut de l'OT d'ONLYOFFICE via le réseau P2P conduirait à une **corruption immédiate** du document pour 3 raisons :
+1.  **Le problème des conflits P2P (OT vs CRDT)** : L'OT d'ONLYOFFICE utilise des coordonnées absolues (ex: "Insère A à l'index 10"). Si Alice et Bob tapent à l'index 10 en même temps hors-ligne, la synchronisation brute écrasera leurs textes. Loro, lui, utilise des identifiants mathématiques relatifs (`LoroText`). En traduisant l'action OT vers l'API `LoroText`, on laisse le moteur mathématique de Loro résoudre le conflit P2P.
+2.  **L'asphyxie du Cold Start** : Si nous synchronisions la liste des modifications, un nouvel utilisateur ouvrant le document devrait télécharger des centaines de milliers de deltas `arrayChanges` et forcer le navigateur à les "rejouer" un par un pour reconstituer le document final. Le navigateur crasherait. En mappant vers un Registre Plat (`LoroMap`), Loro maintient l'**état final** en RAM, téléchargeable et affichable instantanément.
+3.  **La fusion asynchrone (Mode Avion)** : L'OT centralisé est incapable de fusionner des semaines de modifications hors-ligne massives entre deux utilisateurs. En traduisant vers les structures CRDT (LoroTree), la fusion différée devient mathématiquement parfaite.
+
+### 7.2 Le Pont "Passe-Plat" (arrayChanges ↔ Loro)
 Le système repose sur la traduction simultanée entre l'OT centralisé (ONLYOFFICE) et le CRDT décentralisé (Loro) via l'`InternalId` comme "plaque d'immatriculation" :
 
 1. **Aller (Local vers Réseau P2P)** :
@@ -177,7 +184,7 @@ Le système repose sur la traduction simultanée entre l'OT centralisé (ONLYOFF
 
 Cette double architecture permet d'avoir la robustesse de l'affichage d'ONLYOFFICE tout en bénéficiant de la magie hors-ligne et P2P du CRDT.
 
-### 7.1 Gestion du Undo / Redo (Time-Travel Local)
+### 7.3 Gestion du Undo / Redo (Time-Travel Local)
 Un défi majeur de la co-édition Temps Réel est la fonction "Annuler" (Ctrl+Z). Si Alice et Bob tapent dans le même paragraphe, et qu'Alice fait Ctrl+Z, le moteur natif d'ONLYOFFICE (pensé pour être centralisé) risque d'effacer les caractères que Bob vient de taper.
 Pour résoudre cela, **nous désactivons le gestionnaire d'historique natif d'ONLYOFFICE**.
 À la place, nous interceptons les événements clavier Ctrl+Z / Ctrl+Y (ou les clics sur les boutons de la barre d'outils) et nous les redirigeons vers l'API **Time-Travel de Loro** (`loro.undo()` / `loro.redo()`).
