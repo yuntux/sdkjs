@@ -14,6 +14,9 @@ use sha2::{Digest, Sha256};
 use std::sync::Arc;
 use tokio::sync::broadcast;
 use jsonwebtoken::{decode, DecodingKey, Validation, Algorithm};
+use axum::Json;
+use std::time::Instant;
+use serde::Serialize;
 
 #[derive(Deserialize)]
 struct Claims {
@@ -32,6 +35,26 @@ struct AppState {
     rooms: DashMap<String, broadcast::Sender<Vec<u8>>>,
     // BlobStore temporaire : Hash SHA256 -> Binaire de l'image
     blob_store: DashMap<String, Vec<u8>>,
+    // Phase 4 : Stateful Edge Cache (Cache Zombie de 15 minutes)
+    edge_cache: DashMap<String, TwinCache>,
+}
+
+struct TwinCache {
+    docx: Vec<u8>,
+    loro: Vec<u8>,
+    timestamp: Instant,
+}
+
+#[derive(Deserialize)]
+struct TwinPayload {
+    docx: Vec<u8>,
+    loro: Vec<u8>,
+}
+
+#[derive(Serialize)]
+struct TwinResponse {
+    docx: Vec<u8>,
+    loro: Vec<u8>,
 }
 
 #[tokio::main]
@@ -41,10 +64,12 @@ async fn main() {
     let state = Arc::new(AppState {
         rooms: DashMap::new(),
         blob_store: DashMap::new(),
+        edge_cache: DashMap::new(),
     });
 
     let app = Router::new()
         .route("/room/:doc_id", get(ws_handler))
+        .route("/room/:doc_id/twin", post(upload_twin_handler).get(get_twin_handler))
         .route("/blob", post(upload_blob_handler))
         .with_state(state);
 
@@ -72,6 +97,45 @@ async fn upload_blob_handler(
     println!("🖼️ Blob reçu et stocké. Hash: {}", hash);
 
     hash // On retourne le hash au client pour l'insérer dans le CRDT
+}
+
+/// Handler POST pour sauvegarder le Jumeau (Edge Cache)
+async fn upload_twin_handler(
+    Path(doc_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<TwinPayload>,
+) -> impl IntoResponse {
+    state.edge_cache.insert(doc_id.clone(), TwinCache {
+        docx: payload.docx,
+        loro: payload.loro,
+        timestamp: Instant::now(),
+    });
+    println!("📦 Cache Zombie (Edge Cache) mis à jour pour la salle : {}", doc_id);
+    (axum::http::StatusCode::OK, "Twin cached")
+}
+
+/// Handler GET pour récupérer le Jumeau en cas de Cold Start / Micro-coupure
+async fn get_twin_handler(
+    Path(doc_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+) -> impl IntoResponse {
+    if let Some(cache) = state.edge_cache.get(&doc_id) {
+        // Grace Period : 15 minutes (900 secondes)
+        if cache.timestamp.elapsed().as_secs() < 900 {
+            println!("👻 Jumeau Zombie servi pour la salle : {}", doc_id);
+            let resp = TwinResponse {
+                docx: cache.docx.clone(),
+                loro: cache.loro.clone(),
+            };
+            return (axum::http::StatusCode::OK, Json(resp)).into_response();
+        } else {
+            // Expiré, on libère la RAM
+            println!("🗑️ Jumeau expiré (Grace Period dépassé) pour la salle : {}", doc_id);
+            drop(cache);
+            state.edge_cache.remove(&doc_id);
+        }
+    }
+    (axum::http::StatusCode::NOT_FOUND, "No valid twin found").into_response()
 }
 
 /// Gère la demande de connexion WebSocket entrante avec Authentification Aveugle (Phase 4)

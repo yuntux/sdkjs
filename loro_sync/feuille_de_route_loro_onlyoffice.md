@@ -28,8 +28,8 @@ gantt
 
     section Phase 4 — Serveur relais
     Relais WebSocket Rust (Axum/Tokio)      :p4a, after p2b, 3d
-    Persistance append-only log             :p4b, after p4a, 2d
-    Snapshot client → Seafile               :p4c, after p4b, 2d
+    Stateful Edge Cache (RAM Zombie)        :p4b, after p4a, 2d
+    Client-Side Callback (.docx → Seafile)  :p4c, after p4b, 2d
 
     section Phase 5 — Stabilisation
     Anti-écho & flags de mutation           :p5a, after p3c, 3d
@@ -104,23 +104,18 @@ sdkjs/word/
 | Intercepter `saveChanges` | Dévier les objets de mutation OT locaux (`arrayChanges`) vers notre futur traducteur CRDT au lieu du réseau officiel. |
 | Valider l'isolement | Démontrer que le client fonctionne sans backend, et que les frappes locales sont interceptées par le script d'injection. |
 
-### 1.3 Identification des hooks de mutation (2 jours)
+### 1.3 Identification du hook unique (arrayChanges) (1 jour)
 
-Lister les **9 catégories de mutations** à intercepter :
+Dans une approche classique, nous aurions dû intercepter des dizaines de méthodes (`CRun.AddText()`, `CTable.AddRow()`, etc.). 
+Cependant, l'analyse montre que le moteur OT interne d'ONLYOFFICE concentre toutes ses mutations dans un seul pipeline de sortie : le tableau `arrayChanges`.
 
-| Catégorie | Méthodes clés dans sdkjs | Conteneur Loro cible |
-|---|---|---|
-| Insertion de texte | `CRun.AddText()`, `CParagraph.Internal_Content_Add()` | `LoroText.insert()` |
-| Suppression de texte | `CRun.RemoveText()`, `CParagraph.Internal_Content_Remove()` | `LoroText.delete()` |
-| Formatage inline | `CRun.SetBold()`, `.SetItalic()`, `.SetFontSize()` | `LoroText.mark()` |
-| Style de paragraphe | `CParagraph.SetStyle()`, `.SetAlignment()` | `LoroMap` (propriétés) |
-| Opérations sur tableaux | `CTable.AddRow()`, `.MergeCells()`, `.RemoveColumn()` | `LoroList` + `LoroMap` |
-| Images et formes | `CShape.setPosition()`, `CDrawing.Set_WrappingType()` | `LoroMap` (propriétés d'ancrage) |
-| Sections | `CSection.SetPageSize()`, `.SetMargins()` | `LoroMap` |
-| Undo/Redo | `CHistory.Add_Transaction()` | `LoroDoc.commit()` / checkout |
-| Curseur/Sélection | `CDocumentContent.SetSelectionState()` | Awareness channel (hors CRDT) |
+| Tâche | Détail |
+|---|---|
+| Repérer le point d'émission | Trouver la fonction interne `AscCommon.CDocsCoApi.saveChanges` qui prépare l'envoi réseau. |
+| Intercepter le payload | Hooker cette fonction pour capturer l'objet `arrayChanges` avant qu'il ne parte sur le WebSocket. |
+| Muter en silence | Vérifier que nous pouvons réinjecter un `arrayChanges` venant du réseau via `ApplyChanges()` sans déclencher de boucle infinie. |
 
-**Livrable** : Fichier `hooks-inventory.md` — la spécification technique du binding.
+**Livrable** : Fichier `hooks-inventory.md` simplifié (une seule cible d'interception).
 
 ---
 
@@ -129,46 +124,30 @@ Lister les **9 catégories de mutations** à intercepter :
 ### Objectif
 Créer le **modèle de données Loro** qui reflète un document OOXML, et le pont TypeScript pour l'alimenter.
 
-### 2.1 Modélisation OOXML → conteneurs Loro (3 jours)
+### 2.1 Modélisation OOXML → LoroTree (3 jours)
 
-Concevoir le schéma de l'arbre Loro qui représente un document Word :
+Concevoir le schéma CRDT qui représente un document Word à l'aide de la structure arborescente native de Loro :
 
 ```typescript
-// Structure cible du LoroDoc pour un document texte
+// Structure cible du LoroDoc
 const doc = new LoroDoc();
 
-// Métadonnées du document
-const meta = doc.getMap("meta");
-// meta.set("title", "Mon rapport");
-// meta.set("author", "Pierre");
+// Arbre universel des nœuds (LoroTree)
+const tree = doc.getTree("document");
 
-// Corps du document = liste ordonnée de blocs
-const body = doc.getList("body");
+// Création d'un nœud Paragraphe
+const paraNode = tree.createNode();
+// Les propriétés génériques sont stockées aveuglément sur le nœud
+paraNode.data.set("type", "Paragraph");
+paraNode.data.set("style", "Heading1");
+paraNode.data.set("alignment", "center");
 
-// Chaque bloc = une Map décrivant un paragraphe, tableau, ou image
-// Exemple paragraphe :
-// {
-//   type: "paragraph",
-//   style: "Heading1",
-//   alignment: "center",
-//   content: LoroText (avec marks pour le formatage inline)
-// }
-
-// Exemple tableau :
-// {
-//   type: "table",
-//   rows: LoroList<LoroList<{ content: LoroText, colspan, rowspan }>>
-// }
-
-// Sections (sauts de page, marges)
-const sections = doc.getList("sections");
+// Le texte est géré séparément pour gérer les conflits spatiaux
+const textContent = doc.getText("text_" + paraNode.id);
 ```
 
 > [!IMPORTANT]
-> **Décision architecturale critique** : Granularité du CRDT.
-> - Trop fin (1 conteneur par caractère) → explosion mémoire
-> - Trop gros (1 conteneur par page) → conflits fréquents
-> - **Choix recommandé** : 1 `LoroText` par paragraphe + 1 `LoroMap` par bloc pour les propriétés
+> **Décision architecturale critique** : Nous utilisons le `LoroTree` qui gère nativement les déplacements de nœuds (Move) de manière sécurisée (sans créer de cycles), rendant les listes imbriquées (`LoroList`) obsolètes.
 
 ### 2.2 Pont TypeScript ↔ Rust/WASM (3 jours)
 
@@ -272,51 +251,50 @@ loro-relay-server/
 | Authentification | Vérification d'un token JWT ou Seafile en amont de l'upgrade WebSocket |
 | Métriques | Endpoint `/metrics` (Prometheus) : nombre de rooms actives, connexions, octets relayés |
 
-### 4.2 Persistance append-only log (2 jours)
+### 4.2 Le Stateful Edge Cache (Cache Zombie en RAM) (2 jours)
+
+Conformément à la nouvelle architecture, le Routeur Rust **n'a pas de base de données et n'écrit jamais sur le disque dur**. Il gère les micro-coupures réseau en stockant le document en mémoire vive de manière éphémère.
 
 ```rust
-// Pour chaque delta reçu, append dans le fichier journal
-async fn append_delta(doc_id: &str, delta: &[u8]) -> io::Result<()> {
-    let path = format!("./data/logs/{}.binlog", doc_id);
-    let mut file = OpenOptions::new().create(true).append(true).open(&path).await?;
-    // Format : [u32 length][bytes delta]
-    file.write_all(&(delta.len() as u32).to_le_bytes()).await?;
-    file.write_all(delta).await?;
-    file.flush().await?;
-    Ok(())
+// Dans le routeur Rust (Axum) : Cache RAM de 15 minutes
+struct TwinCache {
+    docx: Vec<u8>,
+    loro: Vec<u8>,
+    timestamp: Instant,
 }
+
+// L'état est stocké dans une DashMap en mémoire vive
+edge_cache: DashMap<String, TwinCache>
 ```
 
 | Tâche | Détail |
 |---|---|
-| Format du journal | Séquentiel TLV (Type-Length-Value) : `[4 bytes longueur][N bytes delta Loro]` |
-| Rotation des logs | Après réception d'un snapshot consolidé du client → troncature du `.binlog` |
-| Reconstruction au démarrage | `GET /api/docs/:doc_id/recovery` → renvoie le dernier snapshot Seafile + le binlog restant |
+| Route `POST /room/:id/twin` | Reçoit le Jumeau envoyé silencieusement par les clients actifs toutes les 60s. |
+| Route `GET /room/:id/twin` | Sert le Jumeau aux nouveaux arrivants si le document est orphelin (Alice a crashé). |
+| Garbage Collection | Le Jumeau expire et est effacé de la RAM après 15 minutes (Grace Period). |
 
-### 4.3 Snapshot client → Seafile (2 jours)
+### 4.3 Le Client-Side Callback (.docx → Seafile) (2 jours)
+
+Puisque nous refusons de sauvegarder le binaire `.loro` sur Seafile (pour forcer la comparaison métier native hors-ligne), c'est le **client web qui génère le `.docx` final et l'uploade sur Seafile**.
 
 ```typescript
-// Déclenché à la fermeture de l'onglet ou périodiquement (toutes les 5 min)
-async function pushSnapshotToSeafile(doc: LoroDoc, docId: string) {
-  const snapshot = doc.export({ mode: "snapshot" }); // Binaire compact
+// Déclenché au clic sur "Sauvegarder" (ou autosave)
+async function pushDocxToSeafile(editor: any, callbackUrl: string) {
+  // 1. Demande au moteur C++ compilé en WASM de générer le fichier .docx
+  const docxBlob = await editor.downloadAs("docx"); 
 
-  await fetch(`/api/docs/${docId}/snapshot`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/octet-stream" },
-    body: snapshot,
+  // 2. Upload vers l'API de Seafile
+  const formData = new FormData();
+  formData.append("file", docxBlob, "document.docx");
+
+  await fetch(callbackUrl, {
+    method: "POST",
+    body: formData
   });
-
-  // Signale au serveur relais qu'il peut tronquer le binlog
-  await fetch(`/api/docs/${docId}/flushed`, { method: "POST" });
 }
-
-// Hook sur beforeunload pour sauvegarder avant fermeture
-window.addEventListener("beforeunload", () => {
-  navigator.sendBeacon(`/api/docs/${docId}/snapshot`, snapshotBytes);
-});
 ```
 
-**Côté serveur** : le endpoint `/api/docs/:doc_id/snapshot` pousse le binaire vers l'API Seafile (ou S3/MinIO) et tronque le fichier `.binlog`.
+**Conséquence** : Nous remplaçons complètement le Document Server backend de ONLYOFFICE. L'export `.docx` est déporté à 100% dans le navigateur de l'utilisateur via WebAssembly.
 
 ---
 
@@ -482,37 +460,15 @@ Utilisez cette section pour suivre l'avancement concret du projet par rapport au
 - [x] Implémenter le "Mutation Guard" (verrou anti-écho) pour bloquer les boucles de synchronisation.
 - [x] Implémenter la structure arborescente avec `LoroTree` (remplace les LoroList).
 - [x] Créer le tampon heuristique (debounce) pour convertir les Delete+Insert en `LoroTree.move()`.
-- [x] Rédiger le code de désérialisation rapide (Cold Start : Loro ➔ JSON ➔ `FromJSON`).
+- [x] **(SUPPRIMÉ)** Rédiger le code de désérialisation rapide (Cold Start : Loro ➔ JSON ➔ `FromJSON`). Remplacé par le Transfert Jumeau.
 
-**Cartographie des 15 codes vitaux (Le MVP) :**
-- [x] Cartographier : Insertion et suppression de caractères (Text Runs).
-- [x] Cartographier : Insertion et suppression de Paragraphes.
-- [x] Cartographier : Propriétés de formatage Inline (Gras, Italique, Souligné, Police, Couleur).
-- [x] Cartographier : Propriétés de Paragraphe (Alignement, Interligne, Marges).
-- [x] Cartographier : Création et suppression de Tableaux simples (Tables).
-- [x] Cartographier : Ajout et suppression de Lignes (Rows) et Cellules (Cells).
-- [x] Cartographier : Listes à puces et Numérotations (Numbering).
-
-### Phase 3.5 : Cartographie exhaustive (La Cible Finale)
-*Ces éléments sont purement du mapping JSON/Type. L'architecture réseau (MVP) n'a pas besoin d'être modifiée.*
-- [ ] Cartographier : Fusion et division de cellules (`colspan` / `rowspan`).
-- [ ] Cartographier : Images inline et Images ancrées (Flottantes).
-- [ ] Cartographier : Formes vectorielles DrawingML (Shapes, Lignes, Connecteurs).
-- [ ] Cartographier : En-têtes (Headers) et Pieds de page (Footers).
-- [ ] Cartographier : Notes de bas de page (Footnotes) et de fin (Endnotes).
-- [ ] Cartographier : Commentaires collaboratifs (Annotations).
-- [ ] Cartographier : Hyperliens et Signets (Bookmarks).
-- [ ] Cartographier : Table des matières automatique (TOC).
-- [ ] Cartographier : Renvois et Références croisées (Cross-references).
-- [ ] Cartographier : Équations Mathématiques (MathType/OMML).
-- [ ] Cartographier : SmartArts (Arbres hiérarchiques complexes).
-- [ ] Cartographier : Graphiques sectoriels/histogrammes (Charts).
-- [ ] Cartographier : Objets OLE (ex: PDF ou Excel intégrés dans Word).
-- [ ] Cartographier : Groupement d'objets (Group Shapes / Canvas).
-- [ ] Cartographier : Contrôles de contenu (Content Controls / Formulaires).
-- [ ] Cartographier : Sauts de page et Sauts de section.
-- [ ] Cartographier : Filigranes (Watermarks).
-- [ ] Cartographier : Thèmes du document (Jeux de couleurs/polices globaux).
+**Traduction des 5 Primitives Structurelles (Remplaçant la cartographie métier) :**
+*Puisque le pont est un "passe-plat" aveugle, nous n'avons plus besoin de cartographier les objets métier (Tableaux, Paragraphes, Listes...). Il suffit de traduire les 5 actions structurelles abstraites de base émises par `arrayChanges` vers les API CRDT de Loro :*
+- [x] Traduire les deltas textuels (Insertion/Suppression de caractères) ➔ Méthodes natives de `LoroText`.
+- [x] Traduire la création de nœud (`CreateNode` : Paragraphe, Tableau, Image, etc.) ➔ `LoroTree.createNode()`.
+- [x] Traduire la suppression de nœud (`DeleteNode`) ➔ `LoroTree.delete()`.
+- [x] Traduire le déplacement de nœud (`MoveNode`) ➔ `LoroTree.move()`.
+- [x] Traduire la modification de propriété (`SetProperty` : Gras, Marge, Ombre, etc.) ➔ `LoroTreeNode.set()` (Stockage aveugle du JSON, sans chercher à le comprendre).
 
 ### Phase 4 : Routeur Rust et Seafile
 - [x] Bootstraper le Routeur Rust (Axum + Tokio + WebSockets).
@@ -520,9 +476,9 @@ Utilisez cette section pour suivre l'avancement concret du projet par rapport au
 - [x] Mettre en place le Blob Store (intercept. des uploads d'images ➔ Stockage temporaire ➔ Renvoi d'un Hash au client).
 - [x] Implémenter le "Client-Side Callback" : hooker le bouton "Sauvegarder" pour envoyer le snapshot final à Seafile.
 - [x] Mettre en place l'interception de l'historique Seafile pour restaurer le bouton natif ONLYOFFICE (Section 19.3).
-- [ ] Implémenter le "Stateful Edge Cache" (cache RAM) sur le Routeur Rust avec une "Grace Period" de 15 minutes.
-- [ ] Côté client : configurer le push silencieux du Jumeau (`.docx` + `.loro`) au routeur toutes les 60 secondes (délai paramétrable et dépendant de la taille du document).
-- [ ] Côté client (Cold Start) : Prioriser le téléchargement du Jumeau Zombie depuis le routeur plutôt que le fichier Seafile si disponible.
+- [x] Implémenter le "Stateful Edge Cache" (cache RAM) sur le Routeur Rust avec une "Grace Period" de 15 minutes.
+- [x] Côté client : configurer le push silencieux du Jumeau (`.docx` + `.loro`) au routeur toutes les 60 secondes (délai paramétrable et dépendant de la taille du document).
+- [x] Côté client (Cold Start) : Prioriser le téléchargement du Jumeau Zombie depuis le routeur plutôt que le fichier Seafile si disponible.
 
 ### Phase 5 : Awareness, Tests et Optimisations
 - [x] Créer le gestionnaire de "Lazy Loading / Frustum Culling" pour les images (`lazyImageLoader.ts`).
@@ -545,49 +501,22 @@ Utilisez cette section pour suivre l'avancement concret du projet par rapport au
 ## MVP vs Extensions : clarification architecturale
 
 > [!IMPORTANT]
-> **L'architecture est intégralement posée par le MVP (Phases 0-6).** Tout le reste — plus de types de nœuds OOXML, le tableur, les slides — est du **travail incrémental de (dé)sérialisation**. Grâce à notre approche universelle (`arrayChanges`), nous n'avons **plus aucun hook métier à écrire**. Chaque nouveau type de nœud suit ce pattern extrêmement simple :
-> 1. Jouer avec l'objet dans ONLYOFFICE et capturer les codes magiques émis dans `arrayChanges` (ex: `Type: 42` = Rotation).
-> 2. Ajouter la traduction de ce code dans notre dictionnaire central `ArrayChangesMapper.ts`.
-> 3. S'assurer que le pont de démarrage (Cold Start) génère bien la bonne structure JSON pour cet objet avant d'appeler `FromJSON`.
+> **L'architecture P2P a provoqué l'effondrement de la complexité.**
+> Grâce au **Transfert Jumeau Atomique**, nous n'avons **plus jamais besoin d'appeler `FromJSON()`** pour initialiser un document. 
+> Conséquence radicale : **La Phase 3.5 (Cartographie de l'anatomie JSON des objets complexes) est totalement annulée et supprimée.**
+> 
+> Le moteur natif `arrayChanges` d'ONLYOFFICE est 100% générique. Que ce soit une image, une fusion de cellules ou un graphique 3D, ONLYOFFICE émet un événement générique (ex: `{ Type: 58, Id: "obj_1", Props: {...} }`). 
+> Notre pont Loro se comporte désormais comme un pur **"Passe-Plat" aveugle** :
+> 1. Il intercepte ce delta générique.
+> 2. Il l'injecte dans le CRDT sous forme de propriété sur un identifiant unique.
+> 3. Le réseau P2P le synchronise.
+> 4. Le pont du destinataire lit la propriété et recrache le delta générique à son propre ONLYOFFICE.
+> 
+> **La rétro-ingénierie (Reverse Engineering) est terminée.** Seul le texte brut (frappes clavier) nécessite une traduction spécifique (vers `LoroText`) à cause des conflits d'index. Tout le reste est synchronisé gratuitement sans aucun effort de développement supplémentaire, réduisant la charge de travail de plusieurs mois à zéro !
 > 4. Écrire les tests de convergence (via Playwright) associés.
 >
 > **Aucune modification d'architecture** n'est nécessaire : le pont, le MutationGuard, le relais Rust et la persistance restent identiques pour tous les formats.
 
-### Matrice de couverture des nœuds OOXML
-
-> [!NOTE]
-> **Propriétés génériques vs Structures spécifiques : Pourquoi cette matrice persiste-t-elle ?**
-> Il est crucial de comprendre la nuance entre ce qui est automatisé par le pont et ce qui nécessite un travail humain :
-> 
-> **1. Ce qui EST 100% générique (Zéro effort)**
-> Si ONLYOFFICE ajoute une nouvelle propriété visuelle simple (ex: "Ombre 3D"), `arrayChanges` émet un delta propre : `{ "Id": "para_1", "Prop": { "Shadow": true } }`. Notre pont prend l'objet `Prop` et l'injecte aveuglément dans Loro. Le réseau le synchronise automatiquement, sans que nous ayons besoin de savoir ce qu'est une Ombre 3D.
-> 
-> **2. Ce qui N'EST PAS générique (L'effort chiffré dans la matrice)**
-> Dès que l'on touche à la hiérarchie ou à des objets métier complexes (Fusion de cellules, SmartArts, Graphiques Excel), ONLYOFFICE n'utilise plus de simples propriétés. 
-> *   **Les actions cryptiques** : ONLYOFFICE émet des codes magiques (ex: `{ "Type": 58, "Id": "cell_1" }`). Il faut faire de la rétro-ingénierie pour deviner que `Type 58` veut dire "Fusion" et l'apprendre au `ArrayChangesMapper.ts`.
-> *   **Le Cold Start (Démarrage à froid)** : Lors du chargement initial d'un document, ONLYOFFICE exige une structure JSON d'une précision chirurgicale pour la méthode `FromJSON`. Si nous ne connaissons pas l'anatomie exacte attendue par ONLYOFFICE pour un "Graphique Sectoriel", le pont ne saura pas le reconstruire depuis Loro et l'éditeur plantera.
-> 
-> Les jours estimés ci-dessous chiffrent donc **l'investigation de ces codes cryptiques et la maîtrise de l'anatomie JSON** de chaque nouvel objet lourd.
-
-| Catégorie de nœuds | MVP | Extension | Complexité du mapping | Effort estimé |
-|---|---|---|---|---|
-| **Texte** (CRun, insertion/suppression) | ✅ | | — | — |
-| **Formatage inline** (bold, italic, font) | ✅ | | — | — |
-| **Styles de paragraphe** (titres, alignement) | ✅ | | — | — |
-| **Tableaux simples** (ajout/suppression lignes) | ✅ | | — | — |
-| Fusion/division de cellules | | ✅ | Élevée (colspan/rowspan) | 3-4j |
-| En-têtes, pieds de page | | ✅ | Moyenne (conteneurs séparés) | 2-3j |
-| Notes de bas de page / de fin | | ✅ | Moyenne (ancrage + conteneur) | 2j |
-| Commentaires collaboratifs | | ✅ | Faible (LoroMap + ancre texte) | 2-3j |
-| Images inline et ancrées | | ✅ | Moyenne (position, habillage) | 3-4j |
-| Formes vectorielles (DrawingML) | | ✅ | Élevée (géométrie, connecteurs) | 5-7j |
-| SmartArts | | ✅ | Très élevée (arbre de layout) | 5-7j |
-| **Tableur** (`cell/` — grille, formules) | | ✅ | Élevée (DAG de dépendances) | 2-3 sem |
-| **Présentations** (`slide/` — calques, transitions) | | ✅ | Élevée (z-order, animations) | 2-3 sem |
-| Export PDF côté client (WASM) | | ✅ | Indépendant (moteur de rendu) | 1-2 sem |
-
-> [!TIP]
-> Chaque ligne "Extension" est un sprint autonome de 2-7 jours qui réutilise 100% de l'infrastructure MVP. On peut les paralléliser ou les prioriser selon les besoins métier.
 
 ---
 
@@ -649,12 +578,11 @@ Pour que deux collègues dans le même avion puissent collaborer de manière "ma
 | **1 — Analyse sdkjs** | 5j | Reverse engineering | Moyen |
 | **2 — Binding Loro** | 6j | **Architecture** (schéma CRDT + pont) | Moyen |
 | **3 — Interception** | 11j | **Architecture** (hooks + anti-écho) | **Élevé** |
-| **4 — Serveur relais** | 7j | **Architecture** (transport + persistance) | Faible |
+| **4 — Serveur relais** | 7j | **Architecture** (transport + Edge Cache) | Faible |
 | **5 — Stabilisation** | 10-13j | **Architecture** (curseurs, fuzz, Track Changes) | **Élevé** |
 | **6 — Démo Web** | 4j | Intégration | Faible |
 | **7 — Desktop Editors** | 8j | Intégration + **Découverte P2P Node.js** | **Moyen** |
 | **TOTAL** | **~8-9 semaines** | | |
-| **Extensions nœuds** | 2-7j / type | **Sérialisation** (pattern identique, pas d'archi) | Faible |
 
 ---
 

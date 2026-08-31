@@ -10,6 +10,7 @@ export class LoroSyncManager {
     private ws: WebSocket | null = null;
     private peerConnections: Map<string, any> = new Map(); // RTC DataChannels
     public undoManager: UndoManager; // Phase 5 : Time-Travel
+    private edgeCacheInterval: any = null; // Timer pour le cache zombie
 
     constructor(doc: LoroDoc) {
         this.doc = doc;
@@ -58,6 +59,63 @@ export class LoroSyncManager {
         if (this.ws && this.ws.readyState === WebSocket.OPEN) {
             this.ws.send(delta);
         }
+    }
+
+    /**
+     * Phase 4 : Push silencieux du Jumeau pour le Edge Cache (Zombies)
+     */
+    public startEdgeCachePush(editor: any, docId: string) {
+        if (this.edgeCacheInterval) clearInterval(this.edgeCacheInterval);
+        
+        // Push silencieux toutes les 60 secondes
+        this.edgeCacheInterval = setInterval(async () => {
+            try {
+                // 1. Snapshot Loro
+                const loroSnapshot = this.doc.exportSnapshot();
+                // 2. Snapshot visuel natif en tâche de fond (WASM)
+                const docxBlob = await editor.downloadAs("docx");
+                const docxBuffer = new Uint8Array(await docxBlob.arrayBuffer());
+                
+                const payload = {
+                    docx: Array.from(docxBuffer),
+                    loro: Array.from(loroSnapshot)
+                };
+
+                const response = await fetch(`http://localhost:3000/room/${docId}/twin`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                
+                if (response.ok) {
+                    console.log(`[P2P Edge Cache] Jumeau poussé silencieusement au routeur (Taille: ${Math.round((docxBuffer.length + loroSnapshot.length)/1024)} KB)`);
+                }
+            } catch (e) {
+                console.warn("[P2P Edge Cache] Impossible de pousser le jumeau au routeur :", e);
+            }
+        }, 60000);
+    }
+
+    /**
+     * Phase 4 : Récupération du Jumeau Zombie en cas de Cold Start / Micro-coupure
+     * Le pont l'appellera AVANT de télécharger le fichier Seafile pour prioriser la RAM du routeur.
+     */
+    public async fetchZombieTwin(docId: string): Promise<{ docx: Blob, loro: Uint8Array } | null> {
+        try {
+            console.log(`[P2P Cold Start] Vérification de la présence d'un cache Zombie sur le routeur...`);
+            const response = await fetch(`http://localhost:3000/room/${docId}/twin`);
+            if (response.ok) {
+                const data = await response.json();
+                console.log(`[P2P Cold Start] 👻 Jumeau Zombie trouvé ! Retard maximum : 60s.`);
+                return {
+                    docx: new Blob([new Uint8Array(data.docx)]),
+                    loro: new Uint8Array(data.loro)
+                };
+            }
+        } catch (e) {
+            console.log("[P2P Cold Start] ❌ Aucun Jumeau Zombie disponible (salon vide depuis plus de 15 min).");
+        }
+        return null;
     }
 
     /**
