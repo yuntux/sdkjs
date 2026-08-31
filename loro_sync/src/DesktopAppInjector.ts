@@ -8,16 +8,17 @@ import { LoroSyncManager } from "./LoroSyncManager";
  */
 export class DesktopAppInjector {
     private syncManager: LoroSyncManager;
-    private mdnsSocket: dgram.Socket;
+    private mdnsSocketV4: dgram.Socket;
+    private mdnsSocketV6: dgram.Socket;
     private readonly MDNS_PORT = 5353;
-    private readonly MDNS_GROUP = "224.0.0.251"; // IP Multicast standard
+    private readonly MDNS_GROUP_V4 = "224.0.0.251"; // IP Multicast mDNS standard (IPv4)
+    private readonly MDNS_GROUP_V6 = "ff02::fb";    // IP Multicast mDNS standard (IPv6)
 
     constructor(syncManager: LoroSyncManager) {
         this.syncManager = syncManager;
         
         console.log("🖥️ Environnement Desktop détecté. Activation des capacités embarquées...");
         this.setupMdnsDiscovery();
-        this.overrideLocalSaveButton();
     }
 
     /**
@@ -25,44 +26,43 @@ export class DesktopAppInjector {
      * Permet à deux ordinateurs sur le même réseau WiFi sans routeur Internet de se trouver.
      */
     private setupMdnsDiscovery() {
-        this.mdnsSocket = dgram.createSocket({ type: "udp4", reuseAddr: true });
-
-        this.mdnsSocket.on("message", (msg, rinfo) => {
-            const strMsg = msg.toString();
-            if (strMsg.startsWith("LORO_PEER_DISCOVERY")) {
-                const peerIp = rinfo.address;
-                console.log(`📡 Pair Loro détecté sur le réseau local à l'IP: ${peerIp}`);
-                // Initialisation d'une connexion P2P directe via WebRTC ou TCP direct
-                this.syncManager.initP2P(peerIp);
-            }
+        // --- Socket IPv4 ---
+        this.mdnsSocketV4 = dgram.createSocket({ type: "udp4", reuseAddr: true });
+        this.mdnsSocketV4.on("message", (msg, rinfo) => this.handleDiscoveryMessage(msg, rinfo));
+        
+        this.mdnsSocketV4.bind(this.MDNS_PORT, () => {
+            try { this.mdnsSocketV4.addMembership(this.MDNS_GROUP_V4); } catch(e) { console.warn("Erreur Multicast IPv4:", e); }
         });
 
-        this.mdnsSocket.bind(this.MDNS_PORT, () => {
-            this.mdnsSocket.addMembership(this.MDNS_GROUP);
-            
-            // Diffuser notre propre présence sur le réseau local
+        // --- Socket IPv6 ---
+        this.mdnsSocketV6 = dgram.createSocket({ type: "udp6", reuseAddr: true });
+        this.mdnsSocketV6.on("message", (msg, rinfo) => this.handleDiscoveryMessage(msg, rinfo));
+        
+        this.mdnsSocketV6.bind(this.MDNS_PORT, () => {
+            try { this.mdnsSocketV6.addMembership(this.MDNS_GROUP_V6); } catch(e) { console.warn("Erreur Multicast IPv6:", e); }
+        });
+
+        // Diffuser notre propre présence sur le réseau local
+        setInterval(() => {
             const myIp = this.getLocalIp();
             const discoveryMsg = Buffer.from(`LORO_PEER_DISCOVERY:${myIp}`);
             
-            setInterval(() => {
-                this.mdnsSocket.send(discoveryMsg, 0, discoveryMsg.length, this.MDNS_PORT, this.MDNS_GROUP);
-            }, 5000); // Ping toutes les 5 secondes
-        });
+            // Broadcast sur les deux réseaux
+            try { this.mdnsSocketV4.send(discoveryMsg, 0, discoveryMsg.length, this.MDNS_PORT, this.MDNS_GROUP_V4); } catch(e) {}
+            try { this.mdnsSocketV6.send(discoveryMsg, 0, discoveryMsg.length, this.MDNS_PORT, this.MDNS_GROUP_V6); } catch(e) {}
+        }, 5000); // Ping toutes les 5 secondes
     }
 
-    /**
-     * Phase 7 : Remplacement de la sauvegarde native locale
-     */
-    private overrideLocalSaveButton() {
-        // Dans DesktopEditors, la sauvegarde vers le disque dur se fait via l'API FS
-        (window as any).saveLocalLoroFile = (filePath: string) => {
-            const fs = require("fs");
-            // const snapshot = this.syncManager.doc.exportSnapshot(); // API Loro
-            const snapshot = new Uint8Array([0, 1, 2]); // Stub
-            fs.writeFileSync(filePath, snapshot);
-            console.log(`💾 Fichier Loro local persisté sur le disque dur : ${filePath}`);
-        };
+    private handleDiscoveryMessage(msg: Buffer, rinfo: dgram.RemoteInfo) {
+        const strMsg = msg.toString();
+        if (strMsg.startsWith("LORO_PEER_DISCOVERY")) {
+            const peerIp = rinfo.address;
+            console.log(`📡 Pair Loro détecté sur le réseau local à l'IP: ${peerIp}`);
+            // Initialisation d'une connexion P2P directe via WebRTC ou TCP direct
+            this.syncManager.initP2P(peerIp);
+        }
     }
+
 
     private getLocalIp(): string {
         const interfaces = os.networkInterfaces();
