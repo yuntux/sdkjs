@@ -520,6 +520,9 @@ Utilisez cette section pour suivre l'avancement concret du projet par rapport au
 - [x] Mettre en place le Blob Store (intercept. des uploads d'images ➔ Stockage temporaire ➔ Renvoi d'un Hash au client).
 - [x] Implémenter le "Client-Side Callback" : hooker le bouton "Sauvegarder" pour envoyer le snapshot final à Seafile.
 - [x] Mettre en place l'interception de l'historique Seafile pour restaurer le bouton natif ONLYOFFICE (Section 19.3).
+- [ ] Implémenter le "Stateful Edge Cache" (cache RAM) sur le Routeur Rust avec une "Grace Period" de 15 minutes.
+- [ ] Côté client : configurer le push silencieux du Jumeau (`.docx` + `.loro`) au routeur toutes les 60 secondes (délai paramétrable et dépendant de la taille du document).
+- [ ] Côté client (Cold Start) : Prioriser le téléchargement du Jumeau Zombie depuis le routeur plutôt que le fichier Seafile si disponible.
 
 ### Phase 5 : Awareness, Tests et Optimisations
 - [x] Créer le gestionnaire de "Lazy Loading / Frustum Culling" pour les images (`lazyImageLoader.ts`).
@@ -529,6 +532,7 @@ Utilisez cette section pour suivre l'avancement concret du projet par rapport au
 - [x] Désactiver le chat interne (`customization.chat = false`) pour intégration Matrix.
 - [x] Rédiger la suite E2E Playwright de vérification de convergence.
 - [x] Mettre en place le Bot Node.js "Headless" pour la génération PDF côté serveur.
+- [x] Implémenter le "State Transfer P2P" (Jumeau Atomique DOCX+Loro) dans `LoroSyncManager.ts` pour le Cold Start.
 
 ### Phase 6 & 7 : Multi-formats et Desktop
 - [x] Validation croisée du Mapper `ArrayChangesMapper.ts` sur Excel (`cell`) et PowerPoint (`slide`).

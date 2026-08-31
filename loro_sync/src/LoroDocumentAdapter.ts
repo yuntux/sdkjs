@@ -78,74 +78,10 @@ export class LoroDocumentAdapter {
         if (loroText) loroText.delete(offset, length);
     }
 
-    // --- COLD START (Démarrage à Froid) ---
-
-    /**
-     * Reconstruit l'objet JSON complet attendu par la méthode native FromJSON d'ONLYOFFICE.
-     * C'est ici que réside "l'effort d'anatomie" (Phase 3.5).
-     */
-    public buildJsonForColdStart(): any {
-        // En théorie, LoroTree retourne ses racines via domTree.roots()
-        const roots = this.domTree.roots();
-        if (roots.length === 0) return {}; // Document vide
-
-        // On démarre la construction récursive depuis la racine
-        return this.buildJsonRecursive(roots[0]);
-    }
-
-    private buildJsonRecursive(treeNode: LoroTreeNode): any {
-        const internalId = treeNode.id as unknown as string; // Identifiant mappé
-        const nodeData = this.nodes.get(internalId) as LoroMap;
-        
-        if (!nodeData) return {};
-
-        const type = nodeData.get("type") as string;
-        const props = (nodeData.get("props") as LoroMap).toJSON();
-        
-        // --- 1. L'Anatomie Générique ---
-        let result: any = {
-            "Type": type, // Type ONLYOFFICE (ex: "Paragraph")
-            "InternalId": internalId,
-            ...props // On injecte toutes les propriétés visuelles interceptées
-        };
-
-        // --- 2. L'Anatomie Spécifique (Le "Mapping" de Phase 3.5) ---
-        
-        // Texte
-        if (type === "Run" || type === "Text") {
-            const loroText = nodeData.get("text") as LoroText;
-            result["Text"] = loroText ? loroText.toString() : "";
-        }
-        
-        // Formes / Images (Récupération des blobs depuis Seafile si besoin)
-        if (type === "Image" || type === "OleObject") {
-            result["DataHash"] = props["BlobHash"] || props["DataHash"];
-        }
-
-        // Mathématiques & SmartArts
-        if (type === "MathEquation") result["OmmlString"] = props["Omml"];
-        if (type === "SmartArt") result["SmartArtLayoutId"] = props["Layout"];
-        
-        // Enfants (Récursivité)
-        const children = treeNode.children();
-        if (children.length > 0) {
-            result["Elements"] = [];
-            for (const child of children) {
-                result["Elements"].push(this.buildJsonRecursive(child));
-            }
-        }
-
-        // Restructuration spécifique (Ex: Tableaux OOXML nécessitent une structure hiérarchique stricte)
-        if (type === "Table" && result["Elements"]) {
-            // Le moteur OOXML attend potentiellement un sous-tableau "Rows"
-            result["Rows"] = result["Elements"];
-            delete result["Elements"];
-        }
-        
-        return result;
-    }
-
-    // --- Réseau ---
+    // --- RÉSEAU ET SYNCHRONISATION ---
+    // Le "Cold Start" complet (Document complet) n'est plus géré par Loro mais par le chargement
+    // natif du fichier .docx fourni par Seafile. Loro se contente d'importer l'historique P2P
+    // de la session en cours.
     public exportSnapshot(): Uint8Array { return this.doc.exportSnapshot(); }
     public import(data: Uint8Array): void { this.doc.import(data); }
 }

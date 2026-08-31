@@ -267,6 +267,20 @@ sequenceDiagram
     BobUI->>BobUI: 8. Rendu (Le mot devient gras sur l'écran)
 ```
 
+### Le Rôle du Serveur Rust : Un Relais Éphémère (Edge Cache)
+Une question légitime se pose : le serveur Rust archive-t-il l'historique des modifications (par exemple, si Alice travaille seule pendant 2 jours) ? 
+**La réponse est non. Le routeur Rust n'a pas de base de données et n'écrit jamais sur le disque dur.** Il fonctionne principalement comme un bureau de poste (Pub/Sub) pour relayer les deltas binaires Loro entre les connexions WebSocket.
+Cependant, pour résoudre le problème spécifique des **micro-coupures réseau** (expliqué en Section 10), le routeur utilise sa mémoire vive (RAM) comme un **Stateful Edge Cache**. Il conserve en RAM une copie éphémère du dernier Jumeau (`.docx` + `.loro`) envoyé par les clients actifs. Ce cache s'autodétruit au bout de 15 minutes d'inactivité. Il n'est donc jamais une source de vérité à long terme, ce rôle étant strictement réservé à Seafile.
+
+**Comment s'effectue le rattrapage (Catch-up) d'un utilisateur déconnecté ?**
+Le travail lourd est effectué par le protocole de synchronisation (Sync Protocol) à l'intérieur des navigateurs :
+1. **La Poignée de main (Handshake)** : Quand Bob se connecte, son navigateur envoie un "Vecteur d'État" (*Sync Step 1*) au serveur Rust. Ce vecteur dit : *"Mon horloge interne est à l'état X"*. Le routeur relaye simplement ce message vocal à Alice.
+2. **L'Intelligence est Côté Client** : Le moteur Loro dans le navigateur d'Alice reçoit ce message. Il calcule localement la différence : *"Bob est à l'état X, ma version actuelle est à Y. Il lui manque exactement 2 jours de deltas."*
+3. **Le Transfert Jumeau** : Le navigateur d'Alice génère le fichier `.docx` à jour en RAM, prend une empreinte Loro atomique, et envoie ces deux fichiers jumeaux à Bob via le routeur.
+4. **La Fusion Visuelle** : L'éditeur de Bob détruit son état local périmé, charge nativement le nouveau `.docx` envoyé par Alice, et initialise son Loro avec l'empreinte mathématique correspondante. L'écran de Bob est instantanément à jour sans avoir à rejouer le moindre delta !
+
+Cette architecture P2P soulage totalement le serveur central. Le routeur Rust ne consomme presque aucune RAM ni espace disque, permettant d'héberger des milliers d'utilisateurs sur une infrastructure à coût dérisoire.
+
 ---
 
 ## 9. Gestion des Objets Binaires (Images, DrawingML)
@@ -287,46 +301,62 @@ Pour les clients Desktop, les chemins locaux (`file:///C:/temp/...`) sont de la 
 
 Malgré sa rapidité et son ingénierie générique, cette méthode de traduction OT ↔ CRDT soulève 4 défis techniques majeurs que nous devrons contourner.
 
-### Limite 1 : Le "Cold Start" (Chargement initial du document)
+### Limite 1 : Le "Cold Start" d'un nouvel arrivant (Rejoindre une session active)
 
-*   **Le scénario du pire** : Charlie ouvre le document pour la première fois. Il reçoit l'historique CRDT Loro (qui contient par exemple 100 pages, soit 50 000 objets). L'outil `arrayChanges` étant conçu pour des micro-deltas, si notre pont devait forcer le moteur ONLYOFFICE à rejouer 50 000 événements `arrayChanges` consécutifs pour reconstruire le document, le thread JavaScript saturerait et le navigateur de Charlie figerait ou crasherait.
+*   **Le scénario du pire** : Charlie rejoint la session d'Alice (active depuis 2 jours). Si Charlie ne reçoit que le `.docx` de Seafile (qui a 2 jours de retard), son éditeur n'est pas à jour. Si on lui envoie l'historique CRDT Loro pour rattraper, il devrait rejouer 50 000 événements `arrayChanges`, ce qui ferait crasher son navigateur. Enfin, nous refusons de reconstruire l'arbre JSON manuellement car cela nécessiterait de coder les 451 classes d'ONLYOFFICE.
 
-*   **La Solution retenue (Séparation Réseau / RAM)** :
-    Grâce à l'approche "miroir" de notre registre plat, nous possédons la structure exacte d'ONLYOFFICE. Au lieu d'utiliser l'OT (`arrayChanges`) pour le démarrage, nous pratiquons une **sérialisation inverse** :
-    1. **Étape 0 - L'Export par un pair actif (Alice)** : Lorsqu'un nouvel utilisateur (Charlie) souhaite rejoindre la session, un utilisateur déjà présent (Alice) appelle la méthode `LoroDoc.exportSnapshot()`. Le moteur Loro d'Alice génère instantanément le binaire compressé de 2 Mo et l'envoie au Routeur Rust.
-    2. **Étape 1 - Le Téléchargement Binaire (Réseau)** : Charlie se connecte au routeur. On ne lui transmet **jamais** de gros JSON. Le réseau lui envoie uniquement ce **Snapshot Binaire Loro** de 2 Mo. La bande passante est préservée.
-    3. **Étape 2 - Le Dépliage en RAM (Local)** : Le moteur WASM de Loro charge ce binaire dans la mémoire de Charlie. Immédiatement, le `LoroDocumentAdapter` de Charlie parcourt le registre plat et "déplie" l'arborescence (en liant les `children` et les `props`). Il génère ainsi à la volée un arbre JSON géant (le format `DOCY`). Cette opération purement locale prend environ 20 ms.
-    4. **Étape 3 - L'Ingestion Native (ONLYOFFICE)** : Ce gros objet JSON (qui peut peser 50 Mo en mémoire vive) est passé directement à la méthode native `CDocument.FromJSON()` de SDKJS. ONLYOFFICE affiche le document d'un coup, sans utiliser le moindre `arrayChanges`, et le JSON temporaire est détruit par le Garbage Collector.
+*   **La Solution retenue (Le "State Transfer" P2P natif)** :
+    Plutôt que d'essayer de traduire le CRDT en JSON, nous utilisons le moteur d'ONLYOFFICE d'Alice (l'hôte) pour faire le travail de sérialisation parfaite.
+    1. **Étape 1 - La Demande (Réseau)** : Charlie se connecte au routeur Rust. Il signale qu'il est nouveau dans le salon.
+    2. **Étape 2 - L'Export en RAM par l'Hôte (Alice)** : Le navigateur d'Alice entend Charlie. Le pont JavaScript d'Alice demande secrètement à son éditeur ONLYOFFICE de générer le fichier `.docx` actuel en mémoire vive (RAM), sans l'envoyer à Seafile.
+    3. **Étape 3 - Le Transfert Jumeau** : Alice envoie à Charlie (via le routeur) **DEUX fichiers binaires** : Le `.docx` généré en RAM (le Snapshot visuel parfait) ET le `.loro` (l'état mathématique du CRDT).
+    4. **Étape 4 - L'Ingestion Native (Charlie)** : Le navigateur de Charlie donne le `.docx` au moteur C++ d'ONLYOFFICE (qui s'ouvre instantanément, de façon 100% native et exhaustive). En parallèle, il charge le `.loro` dans son moteur CRDT. Charlie est désormais un clone parfait d'Alice, prêt pour le Temps Réel, sans jamais avoir écrit une seule ligne de JSON !
 
 ```mermaid
 graph TD
-    subgraph "Client Alice (Pair déjà connecté)"
-        AliceLoro[Moteur Loro]
-        AliceExport[Loro.exportSnapshot]
-        AliceLoro -- "Génère" --> AliceExport
+    subgraph "Client Alice (Hôte Actif)"
+        A_OO[ONLYOFFICE] -- "1. Génère en RAM" --> DocxBin[.docx Binaire]
+        A_Loro[Moteur Loro] -- "2. exportSnapshot()" --> LoroBin[.loro Binaire]
     end
 
     subgraph "Réseau Internet"
         Router((Routeur Rust))
-        LoroBin[Snapshot Binaire Loro<br/>Ultra-compressé - 2 Mo]
-        AliceExport -- "Upload WebSocket" --> Router
-        Router -- "Met à disposition" --> LoroBin
+        DocxBin -- "WebSocket" --> Router
+        LoroBin -- "WebSocket" --> Router
     end
     
     subgraph "Client Charlie (Nouveau venu)"
-        LoroRAM[Moteur Loro WASM]
-        Bridge[LoroDocumentAdapter<br/>Sérialisation inverse]
-        JSON[Arbre JSON complet<br/>~50 Mo]
-        SDKJS[ONLYOFFICE sdkjs<br/>CDocument.FromJSON]
-        Canvas[Rendu Visuel Instantané]
+        Router -- "Reçoit" --> C_DocxBin[.docx Binaire]
+        Router -- "Reçoit" --> C_LoroBin[.loro Binaire]
         
-        LoroBin -- "Téléchargement" --> LoroRAM
-        LoroRAM -- "Dépliage des InternalId (20ms)" --> Bridge
-        Bridge -- "Génération" --> JSON
-        JSON -- "Ingestion native" --> SDKJS
-        SDKJS -- "Dessin" --> Canvas
+        C_DocxBin -- "3. Chargement Natif Zéro-Friction" --> C_OO[ONLYOFFICE]
+        C_LoroBin -- "4. Initialisation CRDT" --> C_Loro[Moteur Loro]
     end
 ```
+
+#### Résilience et Performances du State Transfer P2P
+Ce mécanisme soulève des questions légitimes sur la charge portée par l'Hôte (Alice), mais l'architecture P2P y répond nativement :
+
+1. **L'Hôte va-t-il lagger ? (Performances WebWorker)**
+   Non. Le moteur ONLYOFFICE (AscDFH) exécute la compilation du fichier `.docx` via WebAssembly (WASM) en tâche de fond (Web Worker). La génération prend entre 100 et 300 ms. L'interface d'Alice ne figera pas pendant ce processus. Le binaire est ensuite transmis silencieusement au pont Loro.
+
+2. **Équilibrage de charge (Le rôle du "Parrain")**
+   Dans cette architecture, le réseau est totalement égalitaire. Si 10 personnes sont connectées, les 10 navigateurs possèdent l'intégralité du document en RAM. Lorsqu'un 11ème arrivant se connecte, le routeur Rust (qui connaît la liste des pairs actifs) désigne aléatoirement **un "Parrain" (Sponsor)** parmi les 10 présents. Ce mécanisme évite qu'un seul ordinateur supporte la charge d'accueillir tous les nouveaux arrivants.
+
+3. **Auto-cicatrisation et Micro-Coupures (Le Cache Périphérique / Edge Cache)**
+   Que se passe-t-il si Alice perd sa connexion Wi-Fi ?
+   * **Cas A (Plusieurs pairs actifs)** : Le réseau P2P est "Self-Healing". Si Bob est présent, le routeur l'élit instantanément comme nouveau Parrain. Au retour d'Alice, elle envoie son Vector Clock et Bob lui transmet uniquement les deltas manqués. L'écran d'Alice se met à jour instantanément.
+   * **Cas B (Le "Cygne Noir" : Alice est seule et subit une micro-coupure à la seconde où Bob se connecte)** : Si Alice est l'unique hôte, la coupure réseau supprime le salon d'Internet.
+   * **Pourquoi nous écartons le "File Lock" Seafile** : Une solution classique consisterait à utiliser un verrou Seafile pour bloquer Bob ("Alice édite, patientez"). Cependant, cela pose de graves problèmes d'UX si le PC d'Alice a définitivement crashé (Bob resterait bloqué indéfiniment ou nécessiterait un bouton "Forcer l'édition" complexe).
+   * **La Vraie Solution (Le Cache "Zombie" en RAM du Routeur)** : Nous utilisons une approche de *Stateful Edge Cache*. Toutes les 60 secondes, le client d'Alice pousse discrètement le Jumeau Complet (`.docx` + `.loro`) dans la mémoire vive (RAM) du routeur Rust. Si Alice crashe, le routeur garde ce cache actif pendant un "Grace Period" de 15 minutes. 
+   * **La Résolution** : Lorsque Bob arrive, le routeur agit comme un Parrain fantôme : il lui sert le Jumeau depuis sa RAM. Bob commence à éditer avec un retard maximum de 60 secondes sur le travail d'Alice. Lorsque la connexion d'Alice revient, son arbre Loro et celui de Bob partagent toujours le même Ancêtre Commun (Common Ancestor). La fusion mathématique s'opère magiquement !
+   * **Pourquoi en RAM et pas sur Disque ?** : Nous interdisons au Routeur Rust de sauvegarder ces Jumeaux sur son propre disque dur (SSD). Garder les données en RAM garantit qu'elles s'évaporent à la fin du Grace Period. Cela empêche le routeur de devenir une base de données concurrente à Seafile (évitant le *Two-Master Problem*), et préserve les disques d'une usure prématurée causée par les écritures massives en arrière-plan (I/O Thrashing).
+
+4. **Garantie d'Atomicité (Frappes pendant la génération)**
+   Que se passe-t-il si Alice tape "XYZ" *pendant* les 300 millisecondes où ONLYOFFICE compile le `.docx` pour Bob ? Bob ne va-t-il pas recevoir un fichier périmé ?
+   * **La solution (Synchronisation des Horloges)** : Au moment exact où Alice lance la compilation, le pont "gèle" l'état de Loro et prend une empreinte (`snapshot_V100`).
+   * Alice envoie à Bob ce `.docx` (V100) et ce `.loro` (V100). Les deux fichiers sont donc des **jumeaux parfaits**. Bob s'initialise avec une base parfaitement cohérente.
+   * *Mais où est passé "XYZ" ?* Il n'est pas perdu ! Pendant les 300ms, "XYZ" a été envoyé sur le réseau de manière standard. Dès que Bob finit de charger son jumeau V100, son pont écoute le réseau et applique automatiquement le rattrapage. "XYZ" s'ajoutera sur l'écran de Bob une fraction de seconde après l'ouverture.
 
 ### Limite 2 : Le Phénomène d'Écho (Boucle infinie)
 *   **Le problème** : Lorsqu'on applique un Delta entrant chez Bob (via `arrayChanges`), le moteur ONLYOFFICE de Bob réagit en générant lui-même un nouvel `arrayChanges` sortant (pour prévenir le réseau que son écran a changé). S'il est relayé, cela crée une boucle infinie de modifications.
@@ -360,7 +390,7 @@ graph TD
     1. Bob ouvre le fichier. Le Canvas d'ONLYOFFICE affiche le `.docx` local.
     2. En tâche de fond, le pont de Bob contacte le Routeur Rust (avec un Room ID basé sur le hash du fichier).
     3. **Scénario A (Bob est seul)** : Le routeur répond "Salle vide". Le pont de Bob prend alors le `.docx` affiché à l'écran, génère la structure Loro initiale (de ONLYOFFICE vers Loro) et devient la "graine" (le *Seeder*) pour le réseau.
-    4. **Scénario B (Alice est déjà là)** : Le routeur répond "Salle active" et envoie le Snapshot Loro d'Alice. Le pont de Bob **détruit** immédiatement l'état Loro et le Canvas local, charge le Snapshot d'Alice, refait un Cold Start (Loro ➔ JSON ➔ `FromJSON`), et le document à l'écran se met à jour magiquement avec les dernières frappes d'Alice.
+    4. **Scénario B (Alice est déjà là)** : Le routeur répond "Salle active" et signale à Alice d'envoyer l'état actuel. Alice génère et envoie les Jumeaux Atomiques (`.docx` + `.loro`). Le pont de Bob **détruit** immédiatement l'état Loro et le Canvas local, charge le nouveau `.docx` d'Alice, et le document à l'écran se met à jour magiquement avec les dernières frappes d'Alice.
 
 ---
 
@@ -371,14 +401,8 @@ L'un des avantages majeurs de l'architecture CRDT (comparé à l'OT centralisé 
 ### Le Scénario
 1. **Dans l'avion (Réseau Ad-hoc P2P)** : Alice et Bob prennent un vol. Ils n'ont pas accès à Internet, mais ils se connectent en Wi-Fi local direct. Leurs moteurs Loro s'échangent les micro-deltas en P2P pur. Ils voient leurs modifications respectives en temps réel.
 2. **Sur Terre (Internet)** : Charlie, resté au bureau, modifie le même document, seul, via le Routeur Rust.
-3. **L'Atterrissage (La Réconciliation)** : Alice et Bob atterrissent et retrouvent la connexion 4G. Leurs clients se reconnectent au Routeur Rust central.
-4. **La Fusion Mathématique** : Les Loro d'Alice et Bob envoient toutes les frappes accumulées pendant le vol au Routeur, qui les relaie à Charlie. Le CRDT utilise ses horloges de Lamport pour entremêler les textes d'Alice, Bob et Charlie de manière parfaitement déterministe. **Les trois collaborateurs finissent avec exactement le même document fusionné.**
-
-### ⚠️ Le Piège de l'Origine (The Common Ancestor)
-Pour que cette magie opère, **les clients doivent obligatoirement partager le même ancêtre Loro (historique racine)** avant la coupure réseau. 
-Si Alice (dans l'avion) et Charlie (sur terre) prennent tous les deux un document `.docx` vierge et l'injectent **indépendamment** dans Loro (via le processus de *Seeding* décrit à la Limite 5), les moteurs vont générer des `InternalId` différents.
-À l'atterrissage, Loro considèrera qu'il s'agit de deux documents totalement distincts et refusera de les fusionner.
-*   **La Règle d'Or** : La résilience P2P fonctionne parfaitement à la condition stricte que le document ait été synchronisé au moins une fois (via son fichier caché `.loro` par exemple) avant la partition réseau, afin que tout le monde partage le même arbre d'identifiants.
+3. **L'Atterrissage (La Réconciliation Déléguée)** : Alice et Bob atterrissent et retrouvent la connexion 4G. Leurs clients tentent de se reconnecter au Routeur Rust central.
+4. **L'Arbitrage Métier** : Étant donné que nous avons fait le choix de **ne pas persister** l'historique Loro à long terme (voir Section 21), l'historique CRDT de l'avion est devenu incompatible avec celui de Charlie resté sur terre (ils n'ont plus de *Common Ancestor* Loro valide). Le système P2P s'efface intelligemment : Seafile détecte le conflit lors de la synchronisation du `.docx` d'Alice avec celui de Charlie. Les utilisateurs utiliseront l'outil natif **"Comparer des documents"** d'ONLYOFFICE pour arbitrer visuellement (Accepter/Refuser) les différences. Cela garantit une cohérence métier qu'une fusion mathématique aveugle aurait pu détruire.
 
 ### 11.1 L'Auto-découverte P2P (mDNS / Bonjour)
 Dans ce scénario "Avion" (ou lors d'une coupure Internet d'entreprise), comment les clients d'Alice et Bob se trouvent-ils sur le réseau Wi-Fi local sans serveur central pour les mettre en relation ?
@@ -550,7 +574,7 @@ L'architecture interne d'ONLYOFFICE (`sdkjs`) a été pensée de manière unifi�
 **Pourquoi notre architecture fonctionne-t-elle pour les trois ?**
 1. **L'Agnosticisme du Registre Plat** : Notre adaptateur Loro se fiche de savoir s'il synchronise la largeur d'une colonne Excel ou la couleur d'un titre Word. Il voit simplement des clés/valeurs rattachées à un `InternalId`. Les trois éditeurs utilisent exactement le même système universel d'`InternalId`.
 2. **Le Format Universel arrayChanges** : Les ingénieurs d'ONLYOFFICE ont implémenté le système `arrayChanges` (le moteur de collaboration OT) comme une brique noyau commune (Core) aux trois logiciels. Que Bob ajoute une diapositive PowerPoint ou tape du texte dans Excel, la structure du flux réseau capturé par notre Injecteur est la même.
-3. **Le Cold Start Universel** : Les trois éditeurs possèdent chacun leur propre fichier `fromToJSON.js` (`cell/fromToJSON.js`, `slide/fromToJSON.js`). La mécanique de désérialisation rapide depuis le cache Loro s'applique donc de manière rigoureusement identique pour Excel et PowerPoint.
+3. **Le Transfert Jumeau Universel** : Les trois éditeurs possèdent chacun leur propre exportateur binaire natif (`.xlsx` ou `.pptx`). La mécanique de State Transfer P2P (génération du fichier en RAM par l'Hôte + envoi de l'empreinte Loro) s'applique donc de manière rigoureusement identique pour Excel et PowerPoint.
 
 Notre pont CRDT est donc par essence **agnostique au format de fichier**. Il synchronise des objets DOM virtuels, faisant de cette architecture une solution universelle pour toute la suite bureautique.
 
@@ -618,3 +642,31 @@ Afin de livrer un MVP robuste, notre architecture se concentre sur l'usage "Temp
 *   **Le Cas d'usage** : Un utilisateur souhaite proposer une réécriture complète d'un chapitre d'un contrat sans perturber le document principal sur lequel travaillent ses collègues.
 *   **La Mécanique** : Le client ONLYOFFICE crée un *Fork* local en mémoire (`doc.fork()`). L'utilisateur travaille isolé pendant plusieurs jours. Lorsqu'il a terminé, il déclenche un `doc.merge(branch)`.
 *   **La Magie CRDT** : Contrairement au mode "Suivi des modifications" classique, Loro fusionnera mathématiquement le paragraphe réécrit avec les autres corrections orthographiques que ses collègues auraient pu faire sur le document principal (*Main*) entre-temps, avec une résolution de conflits sémantique et déterministe.
+
+---
+
+## 21. Stratégie de Persistance et Gestion des Conflits Métier (Le Dual-Save Seafile)
+
+La question de la persistance des données à long terme soulève un paradoxe architectural : 
+- Maintenir l'historique CRDT complet permet une fusion hors-ligne "magique" après plusieurs jours, mais sature la RAM et crée un goulot d'étranglement au démarrage (Cold Start Bottleneck).
+- Sauvegarder uniquement un document standard vide l'historique d'annulation (Undo Stack) après chaque session.
+
+### Le choix architectural : L'Éphémère pour le Temps Réel, le `.docx` pour l'Archive
+Notre architecture prend le meilleur des deux mondes en imposant le format natif (`.docx`, `.xlsx`) comme **Source Unique de Vérité (SSOT) au repos**, gérée par **Seafile** :
+
+1. **Le Cold Start Zéro-Friction** : Lorsque l'utilisateur ouvre un document le matin, Seafile transmet le `.docx` brut. Le moteur C++ natif d'ONLYOFFICE ingère ce fichier et l'affiche instantanément. *Conséquence majeure :* Notre pont Loro n'a plus à reconstruire manuellement l'arborescence JSON complexe (les 451 classes) pour initialiser l'éditeur. Le document charge parfaitement via l'algorithme natif. Loro démarre ensuite avec un historique vierge pour la session du jour.
+2. **L'Abandon Volontaire de l'Historique Loro** : Contrairement aux architectures CRDT classiques, nous choisissons délibérément de **ne pas** sauvegarder l'état binaire de Loro (`exportSnapshot()`) à l'intérieur du `.docx` ni sur Seafile.
+Nous aurions pu le faire dans un fichier caché dédié ou dans le dossier `customXml/` du `.docx`. Cette seconde option ne permettrait pas une gestion identique pour tous les formats de document (ODT vs docx, ...) et pourrait doubler la taille des document de manière pérenne. 
+A la place, nous sauvegardons seulement le `.docx` sur Seafile . 
+La mémoire du CRDT est volontairement effacée à la fin de la session. Ce choix métier est assumé pour forcer la résolution de conflits complexes à passer par l'IHM humaine native (voir ci-dessous).
+
+### Résolution des conflits : Convergence Syntaxique vs Sémantique
+Le CRDT garantit la **convergence syntaxique** : l'application ne plantera pas si deux personnes modifient hors-ligne. Cependant, une fusion mathématique aveugle après 3 jours de travail isolé (en forêt) risque de créer une **incohérence sémantique** (des phrases sans sens métier). 
+
+Pour cette raison métier critique, nous utilisons la fonctionnalité native **"Comparer des documents"** d'ONLYOFFICE :
+*   Si Alice travaille hors-ligne 3 jours et renvoie son document, Seafile détectera la divergence et créera un fichier `document (Copie en conflit).docx`.
+*   Alice ouvrira alors l'outil natif d'ONLYOFFICE (Onglet *Collaboration* -> *Comparer*). 
+*   **Notre pont Loro s'efface totalement.** ONLYOFFICE compare les deux `.docx` purs de Seafile et génère une vue "Suivi des modifications".
+*   Alice peut ainsi réviser intelligemment chaque paragraphe (Accepter / Refuser), garantissant la cohérence sémantique (métier) du contrat. 
+
+Cette hybridation permet de déléguer **le Temps Réel ultra-fluide à Loro**, et **l'Asynchrone lourd (Hors-Ligne prolongé) à Seafile et à l'IHM native d'ONLYOFFICE**.

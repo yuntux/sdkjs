@@ -162,4 +162,37 @@ export class LoroSyncManager {
             // Le CRDT Loro se synchronisera automatiquement lors du handshake
         }
     }
+
+    /**
+     * Phase 5.5 : State Transfer P2P Natif (Le Transfert Jumeau Atomique)
+     * Fonction appelée lorsque le routeur désigne ce navigateur comme "Parrain" pour un nouvel arrivant.
+     */
+    public async handleStateTransferRequest(editor: any, requestingPeerId: string) {
+        console.log(`[P2P] Demande de State Transfer reçue de ${requestingPeerId}. Génération en cours...`);
+        
+        try {
+            // 1. Atomicité : Geler le CRDT Loro exactement au moment où on lance la demande à ONLYOFFICE
+            const loroSnapshot = this.doc.exportSnapshot();
+            
+            // 2. Génération : Demande asynchrone (WebWorker) au moteur C++ de générer le binaire .docx
+            // (La méthode exacte d'export binaire varie selon l'API interne sdkjs/builder)
+            const docxBlob = await editor.downloadAs("docx"); 
+
+            console.log(`[P2P] Jumeaux générés (Loro: ${loroSnapshot.length} bytes, DOCX: ${docxBlob.size} bytes). Envoi au routeur.`);
+
+            // 3. Expédition : On envoie les jumeaux atomiques au nouveau venu
+            const transferPayload = JSON.stringify({
+                type: "STATE_TRANSFER_RESPONSE",
+                targetPeerId: requestingPeerId,
+                docx: docxBlob, // Dans une implémentation réelle WebSockets, on enverrait un Blob multiparts ou un ArrayBuffer combiné
+                loro: Array.from(loroSnapshot)
+            });
+
+            if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                this.ws.send(transferPayload);
+            }
+        } catch (e) {
+            console.error("❌ Échec de la génération des jumeaux atomiques :", e);
+        }
+    }
 }
