@@ -294,13 +294,25 @@ sdkjs/
 | **Moteur Loro WASM** | **~15-40 Mo** |
 | **Total** | **~300-600 Mo par onglet** |
 
-### Gain côté serveur : le saut d'échelle
+### Gain côté serveur : Simplification et Décentralisation
 
-| | ONLYOFFICE classique | Relais Rust + LoroDoc |
+| | ONLYOFFICE classique (Document Server) | Relais Rust + LoroDoc |
 |---|---|---|
-| RAM / document moyen | ~150-250 Mo | **~1-2 Mo** |
-| RAM 100 docs actifs | 15-25 Go | **~150-300 Mo** |
-| RAM au repos | ~2-3 Go (Node, RabbitMQ, Redis) | **~15-30 Mo** |
+| RAM / document moyen | ~13-20 Mo | **~1-2 Mo** |
+| RAM 100 docs actifs | ~1.5 - 2 Go | **~150-300 Mo** |
+| Empreinte infrastructure | Lourde (Node, RabbitMQ, Redis, DB) | **~15-30 Mo** (Statique) |
+| Mode Hors-ligne / P2P | **Impossible** | **Natif** |
+
+
+> [!IMPORTANT]
+> **Verdict** : Fusionner le moteur de rendu pixel-perfect d'ONLYOFFICE avec le CRDT Loro est **l'approche technique la plus élégante et réaliste** pour une suite bureautique souveraine Local-First. Le gain ne se mesure pas seulement en Mo gagnés, mais dans la **simplification radicale de l'infrastructure** (suppression de Node.js, RabbitMQ, Redis) et l'apport de capacités inédites : **fonctionnement offline natif et collaboration P2P**, impossibles avec le serveur officiel.
+
+> **Rappel sur la performance native d'ONLYOFFICE :**
+> *"OnlyOffice is one of the best, if not the best online office integrations for NextCloud, because the rendering of the document editor is done client-side, meaning as a rule of thumb, a server can support 75 connections per gigabyte of RAM. This is impressive compared to Collabora Office, which begins to struggle with connections far before this threshold, with the same level of connections. Also, OnlyOffice provides full compatibility with Microsoft Office document formats, compared to Collabora Office, which is based on LibreOffice Online.*
+>
+> *Based on OnlyOffice’s recommendations for the paid version of their software (which is identical to the open source version running in single node mode), a server with 4 GB of RAM and 4 CPU cores can easily support 200 to 400 concurrent users. If you need to scale OnlyOffice horizontally beyond two nodes using a load balancer and shared database backend, we provide custom consulting for more than 400 users with the OnlyOffice Community edition."*
+> — [Autoize : Building ONLYOFFICE Document Server from source](https://autoize.com/building-onlyoffice-document-server-from-source/)
+
 
 ---
 
@@ -462,5 +474,3 @@ graph TD
     K --> N["sdkjs non conçu pour distinguer local/distant"]
 ```
 
-> [!IMPORTANT]
-> **Verdict** : Fusionner le moteur de rendu pixel-perfect d'ONLYOFFICE avec le CRDT Loro est **l'approche technique la plus élégante et réaliste** pour une suite bureautique souveraine Local-First. Le serveur passe de 15-25 Go pour 100 documents à **~150-300 Mo**, avec fonctionnement offline et P2P en prime.

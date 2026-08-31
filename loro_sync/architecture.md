@@ -17,14 +17,14 @@ Notre seule intervention consiste à **arracher le "tuyau réseau" (DocsCoApi)**
 
 ```mermaid
 graph TD
-    subgraph Client Officiel (Web ou Desktop Editors)
+    subgraph "Client Officiel (Web ou Desktop Editors)"
         UI[Interface Utilisateur / Ruban]
         Parser[Parseur C++ x2t / wasm]
         SDKJS[Moteur sdkjs - DOM Interne]
         DocsCoApi[DocsCoApi - Couche Réseau interceptée]
     end
 
-    subgraph Loro Sync Layer (Notre travail)
+    subgraph "Loro Sync Layer (Notre travail)"
         Adapter[LoroDocumentAdapter]
         CRDT[Moteur Loro WASM / Rust]
     end
@@ -74,18 +74,31 @@ Les deltas Loro reçus après une reconnexion P2P hors-ligne seront injectés co
 
 ---
 
-## 4. Comparatif Serveur : Le saut d'échelle
+## 4. Comparatif Serveur : Le saut d'échelle (Simplicité et Décentralisation)
 
-En remplaçant le tentaculaire Document Server (Node.js, RabbitMQ, Redis, PostgreSQL) par la magie du CRDT (où l'intelligence est dans le client), l'infrastructure serveur optionnelle devient microscopique.
+En remplaçant le tentaculaire Document Server (Node.js, RabbitMQ, Redis, PostgreSQL) par la magie du CRDT (où l'intelligence est dans le client), le véritable gain n'est pas uniquement sur la RAM par document, mais sur la **suppression radicale de la complexité d'infrastructure** et l'ajout de capacités **Hors-Ligne / P2P**.
 
-| Métrique | ONLYOFFICE Classique | Relais Rust + Loro |
+| Métrique | ONLYOFFICE Classique (Centralisé) | Relais Rust + Loro (Décentralisé) |
 |---|---|---|
-| **Rôle du serveur** | Ordonnanceur, Arbitre, Convertisseur, Session. | Simple "Dumb" Relais WebSocket (Broadcaster). |
-| **RAM / document actif** | ~150-250 Mo | **~1-2 Mo** |
-| **RAM pour 100 docs** | 15-25 Go | **~150-300 Mo** |
-| **RAM au repos** | ~2-3 Go | **~15-30 Mo** (Un seul binaire statique Alpine) |
+| **Rôle du serveur** | Ordonnanceur, Arbitre, Session (Node.js + RabbitMQ) | Simple "Dumb" Relais WebSocket (Broadcaster). |
+| **RAM / document actif** | ~13-20 Mo (Rendu client, coordination serveur) | **~1-2 Mo** |
+| **RAM pour 100 docs** | ~1.5 - 2 Go | **~150-300 Mo** |
+| **Empreinte de base (Stack)** | Lourde (PostgreSQL, Redis, RabbitMQ, Node) | **~15-30 Mo** (Un seul binaire statique Alpine) |
+| **Fonctionnement Hors-Ligne** | **Impossible** (Le serveur est le maître) | **Natif** (P2P et Local-First) |
+
+
+> [!IMPORTANT]
+> **Verdict** : Fusionner le moteur de rendu pixel-perfect d'ONLYOFFICE avec le CRDT Loro est **l'approche technique la plus élégante et réaliste** pour une suite bureautique souveraine Local-First. Le gain ne se mesure pas seulement en Mo gagnés, mais dans la **simplification radicale de l'infrastructure** (suppression de Node.js, RabbitMQ, Redis) et l'apport de capacités inédites : **fonctionnement offline natif et collaboration P2P**, impossibles avec le serveur officiel.
+
+> **Rappel sur la performance native d'ONLYOFFICE :**
+> *"OnlyOffice is one of the best, if not the best online office integrations for NextCloud, because the rendering of the document editor is done client-side, meaning as a rule of thumb, a server can support 75 connections per gigabyte of RAM. This is impressive compared to Collabora Office, which begins to struggle with connections far before this threshold, with the same level of connections. Also, OnlyOffice provides full compatibility with Microsoft Office document formats, compared to Collabora Office, which is based on LibreOffice Online.*
+>
+> *Based on OnlyOffice’s recommendations for the paid version of their software (which is identical to the open source version running in single node mode), a server with 4 GB of RAM and 4 CPU cores can easily support 200 to 400 concurrent users. If you need to scale OnlyOffice horizontally beyond two nodes using a load balancer and shared database backend, we provide custom consulting for more than 400 users with the OnlyOffice Community edition."*
+> — [Autoize : Building ONLYOFFICE Document Server from source](https://autoize.com/building-onlyoffice-document-server-from-source/)
+
 
 ---
+
 
 ## 5. Synthèse de l'Anatomie de sdkjs & Pipeline de Mutation
 
